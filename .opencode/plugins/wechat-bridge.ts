@@ -102,6 +102,7 @@ const _fwdLastTool = new Map<string, string>()
 const _userMsgIds = new Set<string>()
 const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
+const _suppressFwd = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
@@ -1544,14 +1545,14 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
     "permission.ask": createPermissionHandler(client),
     "experimental.chat.system.transform": async (_input: any, output: { system: string[] }) => {
       try {
-        const { flat } = await listAllSessions(client)
+        const { flat, dirMap } = await listAllSessions(client)
         if (flat.length === 0) return
-        const lines = ["当前可用的会话："]
-        for (const s of flat) {
-          lines.push(`  ${s.title}  (${s.id.slice(0, 16)}...)`)
-        }
+        const sessionLines = formatDirSessions(flat, dirMap, undefined)
+        const lines = ["当前可用的会话：", ...sessionLines]
         lines.push("")
-        lines.push("用户说「转发」时，使用 forward_to_session 工具")
+        lines.push("用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：")
+        lines.push("  - ！会话 或 !sessions → 列出所有会话")
+        lines.push("  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发")
         output.system.push(lines.join("\n"))
       } catch { /* best effort */ }
     },
@@ -1620,6 +1621,7 @@ function createEventHandler(client: any) {
       // auto-continue：AI 出错后自动重试
       if (_pendingContinue.has(sid)) {
         _pendingContinue.delete(sid)
+        _suppressFwd.add(sid)
         try {
           await client.session.prompt({
             path: { id: sid },
@@ -1628,6 +1630,8 @@ function createEventHandler(client: any) {
           log("AUTO_CONT", `[${t(sid)}] resume sent`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
+        } finally {
+          _suppressFwd.delete(sid)
         }
       }
       return
@@ -1636,6 +1640,7 @@ function createEventHandler(client: any) {
     if (event.type === "session.compacted") {
       const sid = (event as any).properties?.sessionID
       if (sid) {
+        _suppressFwd.add(sid)
         try {
           await client.session.prompt({
             path: { id: sid },
@@ -1644,6 +1649,8 @@ function createEventHandler(client: any) {
           log("AUTO_CONT", `[${t(sid)}] compact resume sent`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
+        } finally {
+          _suppressFwd.delete(sid)
         }
       }
       return
@@ -1715,7 +1722,7 @@ function createEventHandler(client: any) {
     if (event.type === "message.part.updated") {
       const p = event.properties?.part
       const sid = p?.sessionID
-      if (!sid) return
+      if (!sid || _suppressFwd.has(sid)) return
       const wxId = findWechatSender(sid)
       if (!wxId) return
       if (p.type === "reasoning") {
@@ -1777,10 +1784,10 @@ function createTools(client: any) {
       args: {},
       execute: async () => {
         try {
-          const { flat } = await listAllSessions(client)
+          const { flat, dirMap } = await listAllSessions(client)
           if (flat.length === 0) return { output: "暂无会话" }
-          const lines = flat.map((s, i) => `${i + 1}. ${s.title}  (${s.id.slice(0, 16)}...)`)
-          return { output: lines.join("\n") }
+          const sessionLines = formatDirSessions(flat, dirMap, undefined)
+          return { output: sessionLines.join("\n") }
         } catch {
           return { output: "获取会话列表失败" }
         }
