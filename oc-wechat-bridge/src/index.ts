@@ -1161,7 +1161,7 @@ function formatDirSessions(
     const dirSessions = flat.filter(s => dirMap.get(s.id) === di)
     if (dirSessions.length === 0) continue
     const dirName = getNick(_projectDirs[di])
-    lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`)
+    lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`, "")
     for (const s of dirSessions) {
       globalIdx++
       const isCurrent = s.id === currentSid
