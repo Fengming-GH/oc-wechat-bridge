@@ -1558,27 +1558,30 @@ function createEventHandler(client: any) {
       try {
         const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 10 } })
         const msgs = Array.isArray(msgsResp) ? msgsResp : msgsResp.data ?? []
-        const lines: string[] = []
+        const toolNames: string[] = []
+        const reasoningLines: string[] = []
+        let replyText = ""
         for (let i = msgs.length - 1; i >= 0; i--) {
           const msg = msgs[i]
           if (msg.info?.role === "assistant") {
             if (msg.info.mode) _modeCache.set(sid, msg.info.mode)
             const msgParts = Array.isArray(msg.parts) ? msg.parts : []
             for (const p of msgParts) {
-              if (p.type === "text" && !p.ignored) {
-                lines.push(p.text ?? "")
+              if (p.type === "reasoning") {
+                reasoningLines.unshift(p.text ?? "")
               } else if (p.type === "tool") {
-                const toolOut = p.state?.status === "completed" ? ` ${p.state.output?.slice(0, 200)}` : ""
-                lines.push(`🔧 ${p.state?.title ?? p.tool ?? "?"}${toolOut}`)
-              } else if (p.type === "patch") {
-                lines.push(`📝 ${(p.files ?? []).join(", ")}`)
+                const name = p.state?.title ?? p.tool ?? ""
+                if (name && !toolNames.includes(name)) toolNames.push(name)
               }
             }
+            // 最后一个 assistant 消息的 text 作为最终回复
+            const lastText = msgParts.findLast((p: any) => p.type === "text" && !p.ignored)?.text?.trim()
+            if (lastText && !replyText) replyText = lastText
           }
           if (msg.info?.role === "user") break
         }
-        lines.reverse()
-        finalText = lines.join("\n").trim()
+        const all = [...toolNames, ...reasoningLines, replyText].filter(Boolean)
+        finalText = all.join("\n").trim()
       } catch (err) {
         log("IDLE_GET_MSG_FAIL", `${err}`)
       }
