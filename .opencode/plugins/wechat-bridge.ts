@@ -1013,7 +1013,7 @@ async function processInboundMessage(
       : trimmed
 
     await updateSessionIcon(client, sid, "processing")
-    await client.session.prompt({
+    await client.session.promptAsync({
       path: { id: sid },
       body: { agent: "build", parts: [{ type: "text" as any, text: prompt }] },
     })
