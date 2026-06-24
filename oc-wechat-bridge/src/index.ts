@@ -94,8 +94,6 @@ const recentMessageKeys = new Set<string>()
 const recentMessageOrder: string[] = []
 const sidTitle = new Map<string, string>()
 const wechatSid = new Map<string, string>()
-let _joinDir: number | null = null
-let _joinDirTimer: ReturnType<typeof setTimeout> | null = null
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
@@ -1087,14 +1085,13 @@ function saveAttachment(fileName: string, data: Buffer): string {
  * | 指令 | 别名 | 功能 |
  * |:-----|:-----|:-----|
  * | `/stop` | `/停止` | 中断当前 AI 任务 |
- * | `/status` | `/状态` | 查看桥接状态 |
- * | `/new [N]` | `/新建 [N]` | 创建新会话（支持指定目录） |
- * | `/join N` | `/进入 N` | 进入第 N 个项目目录 |
- * | `/bind M` | `/绑定 M` | 在 join 目录中绑定第 M 个会话 |
- * | `/sessions` | `/会话` | 列出所有目录的顶层会话 |
+ * | `/status` | `/状态` | 查看所有目录和会话 |
  * | `/switch <id\|编号>` | `/切换 <id\|编号>` | 切换到指定会话 |
- * | `/confirm <code>` | `/批准 <code>` | 批准权限请求 |
- * | `/deny <code>` | `/拒绝 <code>` | 拒绝权限请求 |
+ * | `/new [N]` | `/新建 [N]` | 创建新会话（支持指定目录） |
+ * | `/unbind` | `/解绑` | 解绑当前会话 |
+ * | `/rename <标题>` | `/改名 <标题>` | 修改会话标题 |
+ * | `/mode` | `/模式` | 查看当前会话模式（只读） |
+ * | `/help` | `/帮助` | 显示指令列表 |
  */
 
 function resolveDir(dirIdx: number | null, worktree: string): string {
@@ -1112,10 +1109,10 @@ async function listAllSessions(client: any): Promise<{ flat: Session[]; dirMap: 
   const dirMap = new Map<string, number>()
   for (let di = 0; di < _projectDirs.length; di++) {
     try {
-      const resp: any = await client.session.list({ directory: _projectDirs[di] })
+      const resp: any = await client.session.list({ query: { directory: _projectDirs[di] } })
       const all: Session[] = Array.isArray(resp) ? resp : resp.data ?? []
       for (const s of all) {
-        if (!s.parentID && !dirMap.has(s.id)) {
+        if (!s.parentID) {
           flat.push(s)
           dirMap.set(s.id, di)
         }
@@ -1123,6 +1120,27 @@ async function listAllSessions(client: any): Promise<{ flat: Session[]; dirMap: 
     } catch { /* skip unreachable dirs */ }
   }
   return { flat, dirMap }
+}
+
+function formatDirSessions(
+  flat: Session[],
+  dirMap: Map<string, number>,
+  currentSid: string | undefined,
+): string[] {
+  const lines: string[] = []
+  let globalIdx = 0
+  for (let di = 0; di < _projectDirs.length; di++) {
+    const dirSessions = flat.filter(s => dirMap.get(s.id) === di)
+    if (dirSessions.length === 0) continue
+    const dirName = getNick(_projectDirs[di])
+    lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`)
+    for (const s of dirSessions) {
+      globalIdx++
+      const marker = s.id === currentSid ? " [当前会话]" : ""
+      lines.push(`  ${globalIdx}. ${s.title}${marker}`)
+    }
+  }
+  return lines
 }
 
 async function handleCommand(
@@ -1136,8 +1154,8 @@ async function handleCommand(
   let command = parts[0].toLowerCase()
   const args = parts.slice(1)
 
-  // 兼容无空格参数：/join2 → command="join" args=["2"]
-  const attached = command.match(/^(join|bind|switch|new|unbind|mode|模式)(\d+)$/)
+  // 兼容无空格参数：/switch3 → command="switch" args=["3"]
+  const attached = command.match(/^(switch|new|unbind|mode|模式)(\d+)$/)
   if (attached) {
     command = attached[1]
     args.unshift(attached[2])
@@ -1162,59 +1180,13 @@ async function handleCommand(
       const currentSid = wechatSid.get(senderId)
       log("STATUS", `senderId=${senderId} currentSid=${currentSid}`)
       try {
-        const { flat } = await listAllSessions(client)
-        log("STATUS", `flat=${flat.map(s => `${s.id.slice(0,12)}=${s.title}`).join(", ")}`)
-        const sessionLines = flat.map((s, i) => {
-          const marker = s.id === currentSid ? " [当前会话]" : ""
-          return `${i + 1}. ${s.title}${marker}`
-        })
-        const lines = [
-          `当前目录：${getNick(_projectDirs[0] ?? "")} — 会话（${flat.length} 个）`,
-          ...(sessionLines.length ? sessionLines : ["  (无会话)"]),
-        ]
-        log("STATUS_RAW", `text=${JSON.stringify(lines.join("\n"))}`)
+        const { flat, dirMap } = await listAllSessions(client)
+        const sessionLines = formatDirSessions(flat, dirMap, currentSid)
+        const lines = sessionLines.length ? sessionLines : ["  (无会话)"]
         await wx(lines.join("\n"))
       } catch {
         await wx("获取状态失败")
       }
-      break
-    }
-
-    case "join":
-    case "进入": {
-      const n = parseInt(args[0], 10)
-      if (isNaN(n) || n < 1 || n > _projectDirs.length) {
-        const list = _projectDirs.map((d, i) => `${i + 1}. ${getNick(d)}`).join("\n")
-        await wx(`请指定目录编号（1-${_projectDirs.length}）：\n${list}`)
-        break
-      }
-      _joinDir = n
-      if (_joinDirTimer) clearTimeout(_joinDirTimer)
-      _joinDirTimer = setTimeout(() => { _joinDir = null; _joinDirTimer = null }, 5 * 60 * 1000)
-      await wx(`已进入 📁 ${getNick(_projectDirs[n - 1])}\n回复 /new 新建 /sessions 查看 /bind <编号> 绑定`)
-      break
-    }
-
-    case "bind":
-    case "绑定": {
-      const idx = parseInt(args[0], 10)
-      if (isNaN(idx)) {
-        await wx("请指定会话编号，例如 /bind 2")
-        break
-      }
-      const { flat } = await listAllSessions(client)
-      if (idx < 1 || idx > flat.length) {
-        await wx(`❌ 编号超出范围（1-${flat.length}）`)
-        break
-      }
-      const matched = flat[idx - 1]
-      wechatSid.set(senderId, matched.id)
-      sidTitle.set(matched.id, matched.title)
-      saveSessionMapping(worktree)
-      await updateSessionIcon(client, matched.id, "normal")
-      if (_joinDirTimer) { clearTimeout(_joinDirTimer); _joinDirTimer = null }
-      _joinDir = null
-      await wx(`✅ 已绑定会话: ${matched.title} (${matched.id.slice(0, 12)}…)`)
       break
     }
 
@@ -1223,12 +1195,23 @@ async function handleCommand(
     case "new-session":
     case "新建": {
       log("CMD", "new-session")
-      const dirIdx = args.length > 0 ? parseInt(args[0], 10) : (_joinDir ?? null)
-      const targetDir = resolveDir(dirIdx, worktree)
+      let targetDir: string | undefined
+      const n = args.length > 0 ? parseInt(args[0], 10) : NaN
+      if (!isNaN(n)) {
+        try {
+          const { flat } = await listAllSessions(client)
+          const s = flat[n - 1]
+          if (s?.directory) targetDir = s.directory
+        } catch { /* best effort */ }
+      }
+      if (!targetDir) {
+        const currentSid = wechatSid.get(senderId)
+        targetDir = resolveDir(null, worktree)
+      }
       try {
         const title = wechatTitle(senderId)
         const resp: any = await client.session.create({
-          directory: targetDir,
+          query: { directory: targetDir },
           body: { title },
         })
         const newSid = resp.id ?? resp.sessionID ?? resp.data?.id
@@ -1237,56 +1220,11 @@ async function handleCommand(
           sidTitle.set(newSid, title)
           saveSessionMapping(worktree)
           await updateSessionIcon(client, newSid, "normal")
-          if (_joinDirTimer) { clearTimeout(_joinDirTimer); _joinDirTimer = null }
-          _joinDir = null
           await wx(`✅ 已创建新会话 [${t(newSid)}]`)
         }
       } catch (err: any) {
         log("CMD_NEW_FAIL", `${err}`)
         await wx("❌ 创建会话失败")
-      }
-      break
-    }
-
-    case "sessions":
-    case "会话": {
-      log("CMD", "sessions")
-      try {
-        const { flat, dirMap } = await listAllSessions(client)
-        const currentSid = wechatSid.get(senderId)
-
-        if (_projectDirs.length === 0) {
-          await wx("暂无项目目录")
-          break
-        }
-
-        const lines: string[] = []
-        let globalStart = 0
-
-        if (_projectDirs.length === 1) {
-          lines.push(`📁 ${getNick(_projectDirs[0])} (${flat.length}个):`)
-          for (let i = 0; i < flat.length; i++) {
-            const marker = flat[i].id === currentSid ? " ← 当前" : ""
-            lines.push(`  ${i + 1}. ${flat[i].title.slice(0, 24)} (${flat[i].id.slice(0, 8)}…)${marker}`)
-          }
-        } else {
-          for (let di = 0; di < _projectDirs.length; di++) {
-            const dirSessions = flat.filter((s) => dirMap.get(s.id) === di)
-            if (dirSessions.length === 0) continue
-            lines.push(`📁 ${getNick(_projectDirs[di])} (${dirSessions.length}个):`)
-            for (let i = 0; i < dirSessions.length; i++) {
-              const globalIdx = globalStart + i + 1
-              const marker = dirSessions[i].id === currentSid ? " ← 当前" : ""
-              lines.push(`  ${globalIdx}. ${dirSessions[i].title.slice(0, 24)} (${dirSessions[i].id.slice(0, 8)}…)${marker}`)
-            }
-            globalStart += dirSessions.length
-          }
-        }
-        lines.push("回复 /switch <编号> 或 /join <编号> 切换目录")
-        await wx(lines.join("\n"))
-      } catch (err: any) {
-        log("CMD_SESSIONS_FAIL", `${err}`)
-        await wx("❌ 获取会话列表失败")
       }
       break
     }
@@ -1319,10 +1257,16 @@ async function handleCommand(
         sidTitle.set(matched.id, matched.title)
         saveSessionMapping(worktree)
         if (prevSid && prevSid !== matched.id) {
+          const prevTitle = sidTitle.get(prevSid)
+          if (prevTitle && ICON_PREFIXES.some(p => prevTitle.startsWith(p))) {
+            const clean = stripIconPrefix(prevTitle)
+            try { await client.session.update({ path: { id: prevSid }, body: { title: clean } }) } catch { }
+            sidTitle.set(prevSid, clean)
+          }
           await updateSessionIcon(client, prevSid, "normal")
         }
         await updateSessionIcon(client, matched.id, "normal")
-        await wx(`✅ 已切换到会话: ${matched.title} (${matched.id.slice(0, 12)}…)`)
+        await wx(`✅ 已切换到会话: ${matched.title}`)
       } catch (err: any) {
         log("CMD_SWITCH_FAIL", `${err}`)
         await wx("❌ 切换会话失败")
@@ -1447,15 +1391,13 @@ async function handleCommand(
     // -------- 帮助 --------
     case "help":
     case "帮助": {
-      const helpLines = ["--- 指令 ---", "/stop /status /join N /bind M", "/unbind /rename /mode /new", "--- 审批 ---", "同意 或 拒绝"]
-      const helpText = helpLines.join("\n")
-      log("HELP", `join() sending: ${JSON.stringify(helpText)}`)
-      await wx(helpText)
+      const helpLines = ["--- 指令 ---", "/stop /status /switch N /new N", "/unbind /rename /mode /help", "--- 审批 ---", "同意 或 拒绝"]
+      await wx(helpLines.join("\n"))
       break
     }
 
     default:
-      await wx(`未知指令: /${command}\n支持: /stop /停止, /status /状态, /join /进入, /bind /绑定, /unbind /解绑, /rename /改名, /mode /模式 0/1, /new /新建 [N], /sessions /会话, /switch /切换\n审批回复：同意 或 拒绝`)
+      await wx(`未知指令: /${command}\n支持: /stop /停止, /status /状态, /switch /切换, /new /新建, /unbind /解绑, /rename /改名, /mode /模式, /help /帮助\n审批回复：同意 或 拒绝`)
   }
 }
 
@@ -1484,7 +1426,7 @@ async function handleFirstContact(
 项目目录：
 ${dirs}
 
-回复 /join <编号> 进入目录操作
+回复 /status 查看所有会话
 或直接发送你的问题，我将创建新会话处理。`
 
   await sendText(account, senderId, intro, undefined, null)
