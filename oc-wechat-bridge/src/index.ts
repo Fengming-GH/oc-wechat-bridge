@@ -97,6 +97,7 @@ const wechatSid = new Map<string, string>()
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
+const _lastFwdAt = new Map<string, number>()
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -1191,7 +1192,7 @@ async function handleCommand(
         const { flat, dirMap } = await listAllSessions(client)
         const sessionLines = formatDirSessions(flat, dirMap, currentSid)
         const lines = sessionLines.length ? sessionLines : ["  (无会话)"]
-        if (!currentSid) lines.push("回复 /switch <编号> 切换会话")
+        lines.push("回复 /switch <编号> 切换会话")
         await wx(lines.join("\n"))
       } catch {
         await wx("获取状态失败")
@@ -1546,21 +1547,28 @@ function createEventHandler(client: any) {
 
       let finalText = ""
       try {
-        const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 5 } })
+        const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 10 } })
         const msgs = Array.isArray(msgsResp) ? msgsResp : msgsResp.data ?? []
+        const lines: string[] = []
         for (let i = msgs.length - 1; i >= 0; i--) {
           const msg = msgs[i]
           if (msg.info?.role === "assistant") {
             if (msg.info.mode) _modeCache.set(sid, msg.info.mode)
-            const parts = Array.isArray(msg.parts) ? msg.parts : []
-            finalText = parts
-              .filter((p: any) => p.type === "text" && p.ignored !== true)
-              .map((p: any) => p.text ?? "")
-              .join("")
-              .trim()
-            if (finalText) break
+            const msgParts = Array.isArray(msg.parts) ? msg.parts : []
+            for (const p of msgParts) {
+              if (p.type === "text" && !p.ignored) {
+                lines.push(p.text ?? "")
+              } else if (p.type === "tool") {
+                lines.push(`🔧 ${p.state?.title ?? p.tool ?? "?"}`)
+              } else if (p.type === "patch") {
+                lines.push(`📝 ${(p.files ?? []).join(", ")}`)
+              }
+            }
           }
+          if (msg.info?.role === "user") break
         }
+        lines.reverse()
+        finalText = lines.join("\n").trim()
       } catch (err) {
         log("IDLE_GET_MSG_FAIL", `${err}`)
       }
@@ -1606,6 +1614,34 @@ function createEventHandler(client: any) {
         const old = sidTitle.get(s.id)!
         sidTitle.set(s.id, s.title)
         log("SESSION", `[${old}] → [${s.title}]`)
+      }
+      return
+    }
+
+    if (event.type === "message.updated") {
+      const info = event.properties?.info
+      if (info?.role === "user") {
+        const sessionID = info.sessionID
+        const messageID = info.id
+        if (!messageID) return
+        const now = Date.now()
+        const last = _lastFwdAt.get(sessionID) ?? 0
+        if (now - last < 3000) return
+        const wechatId = findWechatSender(sessionID)
+        if (wechatId) {
+          try {
+            const msgResp: any = await client.session.message({ path: { id: sessionID, messageID } })
+            const msg = msgResp.data ?? msgResp
+            const textParts = Array.isArray(msg.parts)
+              ? msg.parts.filter((p: any) => p.type === "text").map((p: any) => p.text).join("")
+              : ""
+            if (textParts) {
+              _lastFwdAt.set(sessionID, now)
+              log("WX_FWD", `[${t(sessionID)}] → ${textParts.slice(0, 60)}`)
+              await sendText(_creds!, wechatId, `[OC] ${textParts}`, undefined, client)
+            }
+          } catch { /* best effort */ }
+        }
       }
       return
     }
