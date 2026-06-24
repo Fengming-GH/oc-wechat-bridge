@@ -136,13 +136,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
 
-function buildOneTimeCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-  let code = ""
-  for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)]
-  return code
-}
-
 // ============================================================
 // Section 4:  Crypto Helpers (AES-128-ECB)
 // ============================================================
@@ -1630,7 +1623,10 @@ function createEventHandler(client: any) {
             body: { parts: [{ type: "text" as any, text: "检测到错误，继续你刚才的工作" }] },
           })
           const contMsgId = contResp?.info?.id ?? contResp?.id
-          if (contMsgId) _skipMsgIds.add(contMsgId)
+          if (contMsgId) {
+            _skipMsgIds.add(contMsgId)
+            if (_skipMsgIds.size > 500) _skipMsgIds.clear()
+          }
           log("AUTO_CONT", `[${t(sid)}] resume sent msg=${contMsgId?.slice(0, 16)}`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
@@ -1648,7 +1644,10 @@ function createEventHandler(client: any) {
             body: { parts: [{ type: "text" as any, text: "继续当前工作，注意本目录的规则文件 AGENTS.md 已更新" }] },
           })
           const contMsgId = contResp?.info?.id ?? contResp?.id
-          if (contMsgId) _skipMsgIds.add(contMsgId)
+          if (contMsgId) {
+            _skipMsgIds.add(contMsgId)
+            if (_skipMsgIds.size > 500) _skipMsgIds.clear()
+          }
           log("AUTO_CONT", `[${t(sid)}] compact resume sent msg=${contMsgId?.slice(0, 16)}`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
