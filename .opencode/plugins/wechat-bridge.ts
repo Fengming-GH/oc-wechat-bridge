@@ -963,7 +963,7 @@ async function processInboundMessage(
   }
 
   if (!wechatSid.has(senderId)) {
-    if (await handleFirstContact(text, senderId, account, worktree)) return
+    if (await handleFirstContact(text, senderId, account, client, worktree)) return
   }
 
   // 同意/拒绝 → 审批
@@ -1155,7 +1155,7 @@ async function handleCommand(
   const args = parts.slice(1)
 
   // 兼容无空格参数：/switch3 → command="switch" args=["3"]
-  const attached = command.match(/^(switch|new|unbind|mode|模式)(\d+)$/)
+  const attached = command.match(/^(switch|切换|new|新建|unbind|解绑|mode|模式)(\d+)$/)
   if (attached) {
     command = attached[1]
     args.unshift(attached[2])
@@ -1176,13 +1176,15 @@ async function handleCommand(
     }
 
     case "status":
-    case "状态": {
+    case "状态":
+    case "会话": {
       const currentSid = wechatSid.get(senderId)
       log("STATUS", `senderId=${senderId} currentSid=${currentSid}`)
       try {
         const { flat, dirMap } = await listAllSessions(client)
         const sessionLines = formatDirSessions(flat, dirMap, currentSid)
         const lines = sessionLines.length ? sessionLines : ["  (无会话)"]
+        if (!currentSid) lines.push("回复 /switch <编号> 切换会话")
         await wx(lines.join("\n"))
       } catch {
         await wx("获取状态失败")
@@ -1318,13 +1320,34 @@ async function handleCommand(
       log("CMD", "unbind")
       const oldSid = wechatSid.get(senderId)
       if (!oldSid) {
-        await wx("当前未绑定任何会话")
+        let sessionsBlock = ""
+        try {
+          const { flat, dirMap } = await listAllSessions(client)
+          const sessionLines = formatDirSessions(flat, dirMap, undefined)
+          if (sessionLines.length > 0) sessionsBlock = "\n" + sessionLines.join("\n")
+        } catch { /* best effort */ }
+        await wx(`你好，我是 WeChat 桥接 🤖${sessionsBlock}\n\n回复 /switch <编号> 切换会话\n或直接发送你的问题，我将创建新会话处理。`)
         break
+      }
+      const prevTitle = sidTitle.get(oldSid)
+      if (prevTitle && ICON_PREFIXES.some(p => prevTitle.startsWith(p))) {
+        const clean = stripIconPrefix(prevTitle)
+        try { await client.session.update({ path: { id: oldSid }, body: { title: clean } }) } catch { }
+        sidTitle.set(oldSid, clean)
       }
       wechatSid.delete(senderId)
       saveSessionMapping(worktree)
       await updateSessionIcon(client, oldSid, "normal")
-      await wx("✅ 已解绑，后续消息将创建新会话")
+      await wx("✅ 已解绑")
+      _pendingFirstContact.add(senderId)
+      setTimeout(() => _pendingFirstContact.delete(senderId), 10 * 60 * 1000)
+      let sessionsBlock = ""
+      try {
+        const { flat, dirMap } = await listAllSessions(client)
+        const sessionLines = formatDirSessions(flat, dirMap, undefined)
+        if (sessionLines.length > 0) sessionsBlock = "\n" + sessionLines.join("\n")
+      } catch { /* best effort */ }
+      await wx(`你好，我是 WeChat 桥接 🤖${sessionsBlock}\n\n回复 /switch <编号> 切换会话\n或直接发送你的问题，我将创建新会话处理。`)
       break
     }
 
@@ -1409,6 +1432,7 @@ async function handleFirstContact(
   text: string,
   senderId: string,
   account: WechatCredentials,
+  client: any,
   worktree: string,
 ): Promise<boolean> {
   if (_pendingFirstContact.has(senderId)) {
@@ -1419,14 +1443,18 @@ async function handleFirstContact(
   _pendingFirstContact.add(senderId)
   setTimeout(() => _pendingFirstContact.delete(senderId), 10 * 60 * 1000)
 
-  const dirs = _projectDirs.map((d, i) => `${i + 1}. ${getNick(d)}`).join("\n")
+  let sessionsBlock = ""
+  try {
+    const { flat, dirMap } = await listAllSessions(client)
+    const sessionLines = formatDirSessions(flat, dirMap, undefined)
+    if (sessionLines.length > 0) sessionsBlock = "\n" + sessionLines.join("\n")
+  } catch { /* best effort */ }
+
   const intro = `你好，我是 WeChat 桥接 🤖
 请告诉我你想做什么，我会创建合适的对话。
+${sessionsBlock}
 
-项目目录：
-${dirs}
-
-回复 /status 查看所有会话
+回复 /switch <编号> 切换会话
 或直接发送你的问题，我将创建新会话处理。`
 
   await sendText(account, senderId, intro, undefined, null)
