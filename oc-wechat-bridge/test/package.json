@@ -1,0 +1,10 @@
+{
+  "name": "@fengming-gh/oc-wechat-bridge-scout",
+  "version": "0.0.1",
+  "description": "API scout plugin for testing OC plugin internals",
+  "type": "module",
+  "main": "api-scout.ts",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

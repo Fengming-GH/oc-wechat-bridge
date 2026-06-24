@@ -1,0 +1,39 @@
+{
+  "name": "@fengming-gh/oc-wechat-bridge",
+  "version": "1.0.0",
+  "description": "将微信消息桥接到 OpenCode，支持双向对话与权限审批",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "wechat",
+    "weixin",
+    "bridge"
+  ],
+  "license": "MIT",
+  "author": "fengming-gh",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.17.9",
+    "@opencode-ai/sdk": "^1.17.9"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fengming-GH/oc-wechat-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fengming-GH/oc-wechat-bridge/issues"
+  },
+  "homepage": "https://github.com/Fengming-GH/oc-wechat-bridge#readme",
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^6.0.3"
+  }
+}

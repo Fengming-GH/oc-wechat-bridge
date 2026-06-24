@@ -1,0 +1,4 @@
+OpenCode Serve
+地址: 127.0.0.1:4100
+用户名: opencode
+密码: 934ca9d9-c3c3-47d8-b7bf-46d676e34c74

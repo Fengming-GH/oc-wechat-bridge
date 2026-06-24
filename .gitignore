@@ -1,0 +1,9 @@
+node_modules/
+.opencode/node_modules/
+.opencode/plugins/log/
+.opencode/plugins/wechat-bridge/session-map.json
+dist/
+*.log
+backup-*/
+.DS_Store
+Thumbs.db
