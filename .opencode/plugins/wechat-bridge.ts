@@ -97,6 +97,8 @@ const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
 const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
+const _progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const _progressLastTool = new Map<string, string>()
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -1552,6 +1554,10 @@ function createEventHandler(client: any) {
       const wechatId = findWechatSender(sid)
       if (!wechatId) return
 
+      const timer = _progressTimers.get(sid)
+      if (timer) { clearTimeout(timer); _progressTimers.delete(sid) }
+      _progressLastTool.delete(sid)
+
       await updateSessionIcon(client, sid, "normal")
 
       let finalText = ""
@@ -1567,7 +1573,13 @@ function createEventHandler(client: any) {
             if (msg.info.mode) _modeCache.set(sid, msg.info.mode)
             const msgParts = Array.isArray(msg.parts) ? msg.parts : []
             for (const p of msgParts) {
-              if (p.type === "reasoning") {
+      if (p.type === "tool") {
+        const name = p.state?.title ?? p.tool ?? ""
+        if (name && _progressLastTool.get(sid) !== name) {
+          _progressLastTool.set(sid, name)
+          try { await sendText(_creds!, wxId, name, undefined, client) } catch { /* best effort */ }
+        }
+      } else if (p.type === "reasoning") {
                 reasoningLines.unshift(p.text ?? "")
               } else if (p.type === "tool") {
                 const name = p.state?.title ?? p.tool ?? ""
@@ -1582,6 +1594,7 @@ function createEventHandler(client: any) {
         }
         const all = [...toolNames, ...reasoningLines, replyText].filter(Boolean)
         finalText = all.join("\n").trim()
+        log("IDLE_OUT", `toolNames=${JSON.stringify(toolNames)} replyText=${JSON.stringify(replyText.slice(0, 60))} finalText=${JSON.stringify(finalText.slice(0, 120))}`)
       } catch (err) {
         log("IDLE_GET_MSG_FAIL", `${err}`)
       }
@@ -1649,6 +1662,30 @@ function createEventHandler(client: any) {
     }
 
     if (event.type === "message.part.updated") {
+      const p = event.properties?.part
+      const sid = p?.sessionID
+      if (!sid) return
+      const wxId = findWechatSender(sid)
+      if (!wxId) return
+      if (p.type === "reasoning") {
+        if (p.text) {
+          const existing = _progressTimers.get(sid)
+          if (existing) clearTimeout(existing)
+          _progressTimers.set(sid, setTimeout(async () => {
+            _progressTimers.delete(sid)
+            try { await sendText(_creds!, wxId, "思考中...", undefined, client) } catch { /* best effort */ }
+          }, 800))
+        }
+      } else if (p.type === "tool") {
+        const name = p.state?.title ?? p.tool ?? ""
+        if (name && _progressLastTool.get(sid) !== name) {
+          _progressLastTool.set(sid, name)
+          try {
+            await sendText(_creds!, wxId, name, undefined, client)
+            log("PROGRESS", `tool=${name} sent to ${wxId.slice(0, 16)}`)
+          } catch { /* best effort */ }
+        }
+      }
       return
     }
   }
