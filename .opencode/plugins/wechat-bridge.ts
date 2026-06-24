@@ -96,6 +96,7 @@ const wechatSid = new Map<string, string>()
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
+const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -976,8 +977,18 @@ async function processInboundMessage(
   const approve = trimmed === "同意" || trimmed === "yes" || trimmed === "y"
   const reject = trimmed === "拒绝" || trimmed === "no" || trimmed === "n"
   if (approve || reject) {
-    if (resolveLatestPermission(senderId, approve)) {
-      await sendText(account, senderId, approve ? "✅ 已批准" : "✅ 已拒绝", undefined, client)
+    const perm = _pendingPermByWx.get(senderId)
+    if (perm) {
+      _pendingPermByWx.delete(senderId)
+      try {
+        await client.postSessionIdPermissionsPermissionId({
+          path: { id: perm.sessionID, permissionID: perm.permissionID },
+          body: { response: approve ? "once" : "reject" },
+        })
+        await sendText(account, senderId, approve ? "✅ 已批准" : "✅ 已拒绝", undefined, client)
+      } catch {
+        await sendText(account, senderId, "审批失败", undefined, client)
+      }
     } else {
       await sendText(account, senderId, "当前没有待审批的请求", undefined, client)
     }
@@ -1617,6 +1628,23 @@ function createEventHandler(client: any) {
       return
     }
 
+    if (event.type === "permission.updated") {
+      const p = event.properties
+      if (p?.sessionID && p?.id) {
+        const wechatId = findWechatSender(p.sessionID)
+        if (wechatId) {
+          _pendingPermByWx.set(wechatId, { sessionID: p.sessionID, permissionID: p.id })
+          setTimeout(() => { if (_pendingPermByWx.get(wechatId)?.permissionID === p.id) _pendingPermByWx.delete(wechatId) }, 5 * 60 * 1000)
+          const desc = p.metadata?.command ?? p.title ?? `工具: ${p.type}`
+          try {
+            await sendText(_creds!, wechatId, `需要确认：${desc.slice(0, 200)}？\n回复 同意 或 拒绝`, undefined, client)
+            log("PERM_SENT", `permission=${p.id.slice(0, 16)} to ${wechatId.slice(0, 16)}`)
+          } catch { /* best effort */ }
+        }
+      }
+      return
+    }
+
     if (event.type === "message.part.updated") {
       return
     }
@@ -1624,117 +1652,13 @@ function createEventHandler(client: any) {
 }
 
 // ============================================================
-// Section 12b:  Permission Handler
+// Section 12b:  Permission Handler (fallback for OC hook)
 // ============================================================
-
-interface PendingPermission {
-  code: string
-  senderId: string
-  sessionID: string
-  permissionID: string
-  resolve: (value: boolean) => void
-}
-const pendingPermissions: PendingPermission[] = []
 
 function createPermissionHandler(client: any) {
   return async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
-    log("PERM_CALLED", `typeof input=${typeof input} keys=${input ? Object.keys(input).join(",") : "null"}`)
-    if (!_creds) { output.status = "ask"; return }
-
-    const sessionID = input.sessionID
-    const permissionID = input.id
-    const toolName = input.type ?? ""
-
-    let wechatId = findWechatSender(sessionID)
-    if (!wechatId) {
-      try {
-        const sessionResp: any = await client.session.get({ path: { id: sessionID } })
-        let pid = sessionResp.parentID ?? sessionResp.data?.parentID
-        while (pid) {
-          wechatId = findWechatSender(pid)
-          if (wechatId) break
-          const parentResp: any = await client.session.get({ path: { id: pid } })
-          pid = parentResp.parentID ?? parentResp.data?.parentID
-        }
-      } catch { /* best effort */ }
-    }
-    if (!wechatId) {
-      // fallback: send to the first bound user
-      wechatId = wechatSid.keys().next().value ?? null
-    }
-    if (!wechatId) {
-      output.status = "ask"
-      return
-    }
-
-    const code = buildOneTimeCode()
-    log("PERM", `#${code} tool=${toolName} session=${sessionID.slice(0, 16)}`)
-
-    try {
-      const desc = input.metadata?.command ?? input.title ?? `工具: ${toolName}`
-      await sendText(_creds!, wechatId,
-        `需要确认：${desc.slice(0, 200)}？\n回复 同意 或 拒绝`,
-        undefined, client,
-      )
-      log("PERM_SENT", `#${code} to ${wechatId.slice(0, 16)}`)
-    } catch (err: any) {
-      log("PERM_SEND_FAIL", `#${code}: ${err.message}`)
-      output.status = "ask"
-      return
-    }
-
-    const approved = await new Promise<boolean>((resolve) => {
-      pendingPermissions.push({
-        code,
-        senderId: wechatId,
-        sessionID,
-        permissionID,
-        resolve,
-      })
-
-      setTimeout(() => {
-        const idx = pendingPermissions.findIndex(p => p.code === code)
-        if (idx >= 0) {
-          pendingPermissions.splice(idx, 1)
-          resolve(false)
-        }
-      }, 5 * 60 * 1000)
-    })
-
-    output.status = approved ? "allow" : "deny"
-    log("PERM", `#${code} → ${output.status}`)
-
-    if (!approved) {
-      try {
-        await sendText(_creds!, wechatId, "⏰ 审批已超时自动拒绝", undefined, client)
-      } catch { /* best effort */ }
-    }
+    output.status = "ask"
   }
-}
-
-function findPendingPermission(code: string, senderId: string): PendingPermission | null {
-  return pendingPermissions.find(p => p.code === code && p.senderId === senderId) ?? null
-}
-
-function resolvePermission(code: string, senderId: string, approved: boolean): boolean {
-  const perm = findPendingPermission(code, senderId)
-  if (!perm) return false
-  const idx = pendingPermissions.indexOf(perm)
-  if (idx >= 0) pendingPermissions.splice(idx, 1)
-  perm.resolve(approved)
-  return true
-}
-
-function resolveLatestPermission(senderId: string, approved: boolean): boolean {
-  for (let i = pendingPermissions.length - 1; i >= 0; i--) {
-    const p = pendingPermissions[i]
-    if (p.senderId === senderId) {
-      pendingPermissions.splice(i, 1)
-      p.resolve(approved)
-      return true
-    }
-  }
-  return false
 }
 
 // ============================================================
