@@ -1542,7 +1542,20 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
   return {
     event: createEventHandler(client),
     "permission.ask": createPermissionHandler(client),
-    tool: createTools(),
+    "experimental.chat.system.transform": async (_input: any, output: { system: string[] }) => {
+      try {
+        const { flat } = await listAllSessions(client)
+        if (flat.length === 0) return
+        const lines = ["当前可用的会话："]
+        for (const s of flat) {
+          lines.push(`  ${s.title}  (${s.id.slice(0, 16)}...)`)
+        }
+        lines.push("")
+        lines.push("用户说「转发」时，使用 forward_to_session 工具")
+        output.system.push(lines.join("\n"))
+      } catch { /* best effort */ }
+    },
+    tool: createTools(client),
   }
 }
 
@@ -1741,7 +1754,7 @@ function createPermissionHandler(client: any) {
 // Section 13:  Optional Tools
 // ============================================================
 
-function createTools() {
+function createTools(client: any) {
   return {
     wechat_status: tool({
       description: "查看微信桥接插件的当前状态，包括登录账户、连接状态、缓存会话数",
@@ -1757,6 +1770,44 @@ function createTools() {
           `数据目录: ${DATA_DIR}`,
         ]
         return { output: lines.join("\n") }
+      },
+    }),
+    list_sessions: tool({
+      description: "列出所有可用会话的标题和 ID",
+      args: {},
+      execute: async () => {
+        try {
+          const { flat } = await listAllSessions(client)
+          if (flat.length === 0) return { output: "暂无会话" }
+          const lines = flat.map((s, i) => `${i + 1}. ${s.title}  (${s.id.slice(0, 16)}...)`)
+          return { output: lines.join("\n") }
+        } catch {
+          return { output: "获取会话列表失败" }
+        }
+      },
+    }),
+    forward_to_session: tool({
+      description: "转发消息到标题前缀匹配的会话。用户说「转发」时使用此工具",
+      args: {
+        prefix: tool.schema.string().describe("目标会话标题前缀，如「WeChat」「改造」等"),
+        message: tool.schema.string().describe("要转发的消息内容"),
+      },
+      execute: async (args, ctx) => {
+        try {
+          const { flat } = await listAllSessions(client)
+          const target = flat.find(s => s.title.startsWith(args.prefix))
+          if (!target) return { output: `未找到标题以「${args.prefix}」开头的会话` }
+          if (target.id === ctx?.sessionID) return { output: "不能转发给自己" }
+          const sourceTitle = sidTitle.get(ctx?.sessionID) ?? "未知"
+          const text = `[转发自「${sourceTitle}」] ${args.message}`
+          client.session.prompt({
+            path: { id: target.id },
+            body: { noReply: false, parts: [{ type: "text" as any, text }] },
+          }).catch((err: any) => log("FWD_ERR", `${err}`))
+          return { output: `✅ 已转发给「${target.title}」` }
+        } catch {
+          return { output: "转发失败" }
+        }
       },
     }),
   }
