@@ -97,8 +97,15 @@ const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
 const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
-const _progressLastTool = new Map<string, string>()
 const _thinkingSent = new Set<string>()
+const _fwdLastTool = new Map<string, string>()
+const _userMsgIds = new Set<string>()
+const _fwdQueue = new Map<string, Promise<void>>()
+
+function enqueueSend(sid: string, fn: () => Promise<void>) {
+  const prev = _fwdQueue.get(sid) ?? Promise.resolve()
+  _fwdQueue.set(sid, prev.then(() => fn(), () => fn()))
+}
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -1554,59 +1561,56 @@ function createEventHandler(client: any) {
       const wechatId = findWechatSender(sid)
       if (!wechatId) return
 
-      _progressLastTool.delete(sid)
+      _fwdLastTool.delete(sid)
       _thinkingSent.delete(sid)
 
       await updateSessionIcon(client, sid, "normal")
 
       let finalText = ""
       try {
-        const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 10 } })
+        const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 15 } })
         const msgs = Array.isArray(msgsResp) ? msgsResp : msgsResp.data ?? []
         const toolNames: string[] = []
-        const reasoningLines: string[] = []
-        let replyText = ""
+        const textParts: string[] = []
         for (let i = msgs.length - 1; i >= 0; i--) {
           const msg = msgs[i]
           if (msg.info?.role === "assistant") {
             if (msg.info.mode) _modeCache.set(sid, msg.info.mode)
             const msgParts = Array.isArray(msg.parts) ? msg.parts : []
             for (const p of msgParts) {
-      if (p.type === "tool") {
-        const name = p.state?.title ?? p.tool ?? ""
-        if (name && _progressLastTool.get(sid) !== name) {
-          _progressLastTool.set(sid, name)
-          try { await sendText(_creds!, wxId, name, undefined, client) } catch { /* best effort */ }
-        }
-      } else if (p.type === "reasoning") {
-                reasoningLines.unshift(p.text ?? "")
-              } else if (p.type === "tool") {
-                const name = p.state?.title ?? p.tool ?? ""
+              if (p.type === "tool") {
+                const name = p.tool ?? ""
                 if (name && !toolNames.includes(name)) toolNames.push(name)
+              } else if (p.type === "text" && !p.ignored) {
+                const t = p.text?.trim()
+                if (t) textParts.push(t)
               }
             }
-            // 最后一个 assistant 消息的 text 作为最终回复
-            const lastText = msgParts.findLast((p: any) => p.type === "text" && !p.ignored)?.text?.trim()
-            if (lastText && !replyText) replyText = lastText
           }
           if (msg.info?.role === "user") break
         }
-        const all = [...toolNames, ...reasoningLines, replyText].filter(Boolean)
+        textParts.reverse()
+        const all = [...toolNames, ...textParts].filter(Boolean)
         finalText = all.join("\n").trim()
-        log("IDLE_OUT", `toolNames=${JSON.stringify(toolNames)} replyText=${JSON.stringify(replyText.slice(0, 60))} finalText=${JSON.stringify(finalText.slice(0, 120))}`)
+        log("IDLE_OUT", `toolNames=${JSON.stringify(toolNames)} textCount=${textParts.length} finalLen=${finalText.length}`)
       } catch (err) {
         log("IDLE_GET_MSG_FAIL", `${err}`)
       }
       if (!finalText) return
 
+      // 所有文字和工具名已通过 message.part.updated 实时发出，这里不再重复发送
       try {
-        const outText = finalText.slice(0, 2000)
-        log("WX_OUT_RAW", `text=${JSON.stringify(outText)}`)
-        await sendText(_creds!, wechatId, outText, undefined, client)
-        log("WX_OUT", `[${t(sid)}] → ${finalText.slice(0, 80)}`)
-      } catch (err: any) {
-        log("WX_OUT_FAIL", `[${t(sid)}] ${err.message}`)
-        recordSendResult(sid, false, client)
+        _thinkingSent.delete(sid)
+        log("WX_IDLE", `[${t(sid)}] idle done`)
+      } catch { /* best effort */ }
+      return
+    }
+
+    if (event.type === "message.updated") {
+      const info = event.properties?.info
+      if (info?.id && (info as any).role === "user") {
+        _userMsgIds.add(info.id)
+        if (_userMsgIds.size > 1000) _userMsgIds.clear()
       }
       return
     }
@@ -1669,16 +1673,18 @@ function createEventHandler(client: any) {
       if (p.type === "reasoning") {
         if (p.text && !_thinkingSent.has(sid)) {
           _thinkingSent.add(sid)
-          try { await sendText(_creds!, wxId, "思考中...", undefined, client) } catch { /* best effort */ }
+          enqueueSend(sid, () => sendText(_creds!, wxId, "思考中...", undefined, client))
         }
       } else if (p.type === "tool") {
         const name = p.tool ?? ""
-        if (name && !name.includes("\\") && !name.includes("/") && _progressLastTool.get(sid) !== name) {
-          _progressLastTool.set(sid, name)
-          try {
-            await sendText(_creds!, wxId, name, undefined, client)
-            log("PROGRESS", `tool=${name} sent to ${wxId.slice(0, 16)}`)
-          } catch { /* best effort */ }
+        if (name && _fwdLastTool.get(sid) !== name) {
+          _fwdLastTool.set(sid, name)
+          enqueueSend(sid, () => sendText(_creds!, wxId, name, undefined, client))
+        }
+      } else if (p.type === "text" && !p.ignored && !p.synthetic && !_userMsgIds.has(p.messageID)) {
+        const t = p.text?.trim()
+        if (t) {
+          enqueueSend(sid, () => sendText(_creds!, wxId, t, undefined, client))
         }
       }
       return
