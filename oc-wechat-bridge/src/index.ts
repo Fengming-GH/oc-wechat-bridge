@@ -99,6 +99,7 @@ const _modeCache = new Map<string, string>()
 const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
 const _progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const _progressLastTool = new Map<string, string>()
+const _thinkingSent = new Set<string>()
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -1557,6 +1558,7 @@ function createEventHandler(client: any) {
       const timer = _progressTimers.get(sid)
       if (timer) { clearTimeout(timer); _progressTimers.delete(sid) }
       _progressLastTool.delete(sid)
+      _thinkingSent.delete(sid)
 
       await updateSessionIcon(client, sid, "normal")
 
@@ -1668,17 +1670,13 @@ function createEventHandler(client: any) {
       const wxId = findWechatSender(sid)
       if (!wxId) return
       if (p.type === "reasoning") {
-        if (p.text) {
-          const existing = _progressTimers.get(sid)
-          if (existing) clearTimeout(existing)
-          _progressTimers.set(sid, setTimeout(async () => {
-            _progressTimers.delete(sid)
-            try { await sendText(_creds!, wxId, "思考中...", undefined, client) } catch { /* best effort */ }
-          }, 800))
+        if (p.text && !_thinkingSent.has(sid)) {
+          _thinkingSent.add(sid)
+          try { await sendText(_creds!, wxId, "思考中...", undefined, client) } catch { /* best effort */ }
         }
       } else if (p.type === "tool") {
-        const name = p.state?.title ?? p.tool ?? ""
-        if (name && _progressLastTool.get(sid) !== name) {
+        const name = p.tool ?? ""
+        if (name && !name.includes("\\") && !name.includes("/") && _progressLastTool.get(sid) !== name) {
           _progressLastTool.set(sid, name)
           try {
             await sendText(_creds!, wxId, name, undefined, client)
