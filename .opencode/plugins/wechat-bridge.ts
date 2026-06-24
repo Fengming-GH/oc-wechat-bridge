@@ -97,7 +97,6 @@ const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
 const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
-const _progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const _progressLastTool = new Map<string, string>()
 const _thinkingSent = new Set<string>()
 
@@ -1555,8 +1554,6 @@ function createEventHandler(client: any) {
       const wechatId = findWechatSender(sid)
       if (!wechatId) return
 
-      const timer = _progressTimers.get(sid)
-      if (timer) { clearTimeout(timer); _progressTimers.delete(sid) }
       _progressLastTool.delete(sid)
       _thinkingSent.delete(sid)
 
