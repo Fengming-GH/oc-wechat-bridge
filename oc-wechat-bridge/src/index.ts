@@ -102,7 +102,7 @@ const _fwdLastTool = new Map<string, string>()
 const _userMsgIds = new Set<string>()
 const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
-const _suppressFwd = new Set<string>()
+const _skipMsgIds = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
@@ -1164,9 +1164,12 @@ function formatDirSessions(
     lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`)
     for (const s of dirSessions) {
       globalIdx++
-      const marker = s.id === currentSid ? " [当前会话]" : ""
-      lines.push(`  ${globalIdx}. ${s.title}${marker}`)
+      const isCurrent = s.id === currentSid
+      const icon = isCurrent ? WECHAT_ICON : ""
+      const marker = isCurrent ? " [当前会话]" : ""
+      lines.push(`  ${globalIdx}. ${icon}${stripIconPrefix(s.title)}${marker}`)
     }
+    lines.push("")
   }
   return lines
 }
@@ -1551,7 +1554,7 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
         const lines = ["当前可用的会话：", ...sessionLines]
         lines.push("")
         lines.push("用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：")
-        lines.push("  - ！会话 或 !sessions → 列出所有会话")
+        lines.push("  - ！会话 或 !sessions → 调用 list_sessions 工具，直接返回工具的输出内容，不要重新排版")
         lines.push("  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发")
         output.system.push(lines.join("\n"))
       } catch { /* best effort */ }
@@ -1621,17 +1624,16 @@ function createEventHandler(client: any) {
       // auto-continue：AI 出错后自动重试
       if (_pendingContinue.has(sid)) {
         _pendingContinue.delete(sid)
-        _suppressFwd.add(sid)
         try {
-          await client.session.prompt({
+          const contResp: any = await client.session.prompt({
             path: { id: sid },
             body: { parts: [{ type: "text" as any, text: "检测到错误，继续你刚才的工作" }] },
           })
-          log("AUTO_CONT", `[${t(sid)}] resume sent`)
+          const contMsgId = contResp?.info?.id ?? contResp?.id
+          if (contMsgId) _skipMsgIds.add(contMsgId)
+          log("AUTO_CONT", `[${t(sid)}] resume sent msg=${contMsgId?.slice(0, 16)}`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
-        } finally {
-          _suppressFwd.delete(sid)
         }
       }
       return
@@ -1640,17 +1642,16 @@ function createEventHandler(client: any) {
     if (event.type === "session.compacted") {
       const sid = (event as any).properties?.sessionID
       if (sid) {
-        _suppressFwd.add(sid)
         try {
-          await client.session.prompt({
+          const contResp: any = await client.session.prompt({
             path: { id: sid },
             body: { parts: [{ type: "text" as any, text: "继续当前工作，注意本目录的规则文件 AGENTS.md 已更新" }] },
           })
-          log("AUTO_CONT", `[${t(sid)}] compact resume sent`)
+          const contMsgId = contResp?.info?.id ?? contResp?.id
+          if (contMsgId) _skipMsgIds.add(contMsgId)
+          log("AUTO_CONT", `[${t(sid)}] compact resume sent msg=${contMsgId?.slice(0, 16)}`)
         } catch (err) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
-        } finally {
-          _suppressFwd.delete(sid)
         }
       }
       return
@@ -1722,7 +1723,7 @@ function createEventHandler(client: any) {
     if (event.type === "message.part.updated") {
       const p = event.properties?.part
       const sid = p?.sessionID
-      if (!sid || _suppressFwd.has(sid)) return
+      if (!sid || _skipMsgIds.has(p.messageID)) return
       const wxId = findWechatSender(sid)
       if (!wxId) return
       if (p.type === "reasoning") {
@@ -1782,11 +1783,20 @@ function createTools(client: any) {
     list_sessions: tool({
       description: "列出所有可用会话的标题和 ID",
       args: {},
-      execute: async () => {
+      execute: async (_args: any, ctx: any) => {
         try {
           const { flat, dirMap } = await listAllSessions(client)
           if (flat.length === 0) return { output: "暂无会话" }
-          const sessionLines = formatDirSessions(flat, dirMap, undefined)
+          let currentSid: string | undefined
+          for (const sid of wechatSid.values()) {
+            if (sid === ctx?.sessionID) { currentSid = sid; break }
+          }
+          if (!currentSid) {
+            for (const sid of wechatSid.values()) {
+              if (flat.some(s => s.id === sid)) { currentSid = sid; break }
+            }
+          }
+          const sessionLines = formatDirSessions(flat, dirMap, currentSid)
           return { output: sessionLines.join("\n") }
         } catch {
           return { output: "获取会话列表失败" }
