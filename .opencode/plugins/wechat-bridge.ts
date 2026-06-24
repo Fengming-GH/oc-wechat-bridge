@@ -206,8 +206,15 @@ const WECHAT_ICON_PROCESSING = "💬"
 const WECHAT_ICON_OFFLINE = "🔴"
 const ICON_PREFIXES = [WECHAT_ICON, WECHAT_ICON_DEGRADED, WECHAT_ICON_PROCESSING, WECHAT_ICON_OFFLINE]
 
-function wechatTitle(senderId: string): string {
-  return `${WECHAT_ICON}微信-${senderId.slice(0, 8)}`
+function wechatTitle(): string {
+  const d = new Date()
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric", month: "numeric", day: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(d)
+  const m = new Map(parts.map(p => [p.type, p.value]))
+  return `微信-${m.get("year")}-${m.get("month")}-${m.get("day")}/${m.get("hour")}-${m.get("minute")}`
 }
 
 function stripIconPrefix(title: string): string {
@@ -262,7 +269,7 @@ async function getOrCreateSession(client: any, wechatId: string, worktree: strin
   }
 
   try {
-    const title = wechatTitle(wechatId)
+    const title = wechatTitle()
     const resp: any = await client.session.create({
       body: { title },
     })
@@ -1211,7 +1218,7 @@ async function handleCommand(
         targetDir = resolveDir(null, worktree)
       }
       try {
-        const title = wechatTitle(senderId)
+        const title = wechatTitle()
         const resp: any = await client.session.create({
           query: { directory: targetDir },
           body: { title },
@@ -1265,7 +1272,6 @@ async function handleCommand(
             try { await client.session.update({ path: { id: prevSid }, body: { title: clean } }) } catch { }
             sidTitle.set(prevSid, clean)
           }
-          await updateSessionIcon(client, prevSid, "normal")
         }
         await updateSessionIcon(client, matched.id, "normal")
         await wx(`✅ 已切换到会话: ${matched.title}`)
@@ -1337,7 +1343,6 @@ async function handleCommand(
       }
       wechatSid.delete(senderId)
       saveSessionMapping(worktree)
-      await updateSessionIcon(client, oldSid, "normal")
       await wx("✅ 已解绑")
       _pendingFirstContact.add(senderId)
       setTimeout(() => _pendingFirstContact.delete(senderId), 10 * 60 * 1000)
