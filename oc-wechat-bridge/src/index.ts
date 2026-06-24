@@ -703,7 +703,11 @@ async function sendText(
       SEND_TIMEOUT_MS,
     )
     if (client) recordSendResult(findSidByRecipient(recipientId), true, client)
-  } catch (err) {
+  } catch (err: any) {
+    if (err.message?.includes("Context token stale")) {
+      log("SEND_STALE", `drop msg for ${recipientId.slice(0, 16)}`)
+      return
+    }
     if (client) recordSendResult(findSidByRecipient(recipientId), false, client)
     throw err
   }
