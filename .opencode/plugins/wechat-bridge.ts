@@ -101,6 +101,7 @@ const _thinkingSent = new Set<string>()
 const _fwdLastTool = new Map<string, string>()
 const _userMsgIds = new Set<string>()
 const _fwdQueue = new Map<string, Promise<void>>()
+const _pendingContinue = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
@@ -1601,16 +1602,50 @@ function createEventHandler(client: any) {
       // 所有文字和工具名已通过 message.part.updated 实时发出，这里不再重复发送
       try {
         _thinkingSent.delete(sid)
-        log("WX_IDLE", `[${t(sid)}] idle done`)
       } catch { /* best effort */ }
+
+      // auto-continue：AI 出错后自动重试
+      if (_pendingContinue.has(sid)) {
+        _pendingContinue.delete(sid)
+        try {
+          await client.session.prompt({
+            path: { id: sid },
+            body: { parts: [{ type: "text" as any, text: "检测到错误，继续你刚才的工作" }] },
+          })
+          log("AUTO_CONT", `[${t(sid)}] resume sent`)
+        } catch (err) {
+          log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
+        }
+      }
+      return
+    }
+
+    if (event.type === "session.compacted") {
+      const sid = (event as any).properties?.sessionID
+      if (sid) {
+        try {
+          await client.session.prompt({
+            path: { id: sid },
+            body: { parts: [{ type: "text" as any, text: "继续当前工作，注意本目录的规则文件 AGENTS.md 已更新" }] },
+          })
+          log("AUTO_CONT", `[${t(sid)}] compact resume sent`)
+        } catch (err) {
+          log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
+        }
+      }
       return
     }
 
     if (event.type === "message.updated") {
       const info = event.properties?.info
-      if (info?.id && (info as any).role === "user") {
-        _userMsgIds.add(info.id)
-        if (_userMsgIds.size > 1000) _userMsgIds.clear()
+      if (info?.id) {
+        if ((info as any).role === "user") {
+          _userMsgIds.add(info.id)
+          if (_userMsgIds.size > 1000) _userMsgIds.clear()
+        } else if ((info as any).role === "assistant" && info.error) {
+          _pendingContinue.add(info.sessionID)
+          log("AUTO_CONT", `[${t(info.sessionID)}] error=${JSON.stringify(info.error).slice(0, 80)}`)
+        }
       }
       return
     }
