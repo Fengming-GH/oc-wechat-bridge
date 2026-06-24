@@ -9,7 +9,6 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 import type {
-  EventMessageUpdated,
   EventSessionIdle,
   EventSessionCreated,
   EventSessionDeleted,
@@ -97,7 +96,6 @@ const wechatSid = new Map<string, string>()
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
-const _lastFwdAt = new Map<string, number>()
 
 // ============================================================
 // Section 3:  Utility Helpers
@@ -997,7 +995,7 @@ async function processInboundMessage(
     await updateSessionIcon(client, sid, "processing")
     await client.session.prompt({
       path: { id: sid },
-      body: { parts: [{ type: "text" as any, text: prompt }] },
+      body: { agent: "build", parts: [{ type: "text" as any, text: prompt }] },
     })
     log("INJECT", `[${t(sid)}] ← ${trimmed.slice(0, 60)}`)
   } catch (err: any) {
@@ -1559,7 +1557,8 @@ function createEventHandler(client: any) {
               if (p.type === "text" && !p.ignored) {
                 lines.push(p.text ?? "")
               } else if (p.type === "tool") {
-                lines.push(`🔧 ${p.state?.title ?? p.tool ?? "?"}`)
+                const toolOut = p.state?.status === "completed" ? ` ${p.state.output?.slice(0, 200)}` : ""
+                lines.push(`🔧 ${p.state?.title ?? p.tool ?? "?"}${toolOut}`)
               } else if (p.type === "patch") {
                 lines.push(`📝 ${(p.files ?? []).join(", ")}`)
               }
@@ -1618,34 +1617,6 @@ function createEventHandler(client: any) {
       return
     }
 
-    if (event.type === "message.updated") {
-      const info = event.properties?.info
-      if (info?.role === "user") {
-        const sessionID = info.sessionID
-        const messageID = info.id
-        if (!messageID) return
-        const now = Date.now()
-        const last = _lastFwdAt.get(sessionID) ?? 0
-        if (now - last < 3000) return
-        const wechatId = findWechatSender(sessionID)
-        if (wechatId) {
-          try {
-            const msgResp: any = await client.session.message({ path: { id: sessionID, messageID } })
-            const msg = msgResp.data ?? msgResp
-            const textParts = Array.isArray(msg.parts)
-              ? msg.parts.filter((p: any) => p.type === "text").map((p: any) => p.text).join("")
-              : ""
-            if (textParts) {
-              _lastFwdAt.set(sessionID, now)
-              log("WX_FWD", `[${t(sessionID)}] → ${textParts.slice(0, 60)}`)
-              await sendText(_creds!, wechatId, `[OC] ${textParts}`, undefined, client)
-            }
-          } catch { /* best effort */ }
-        }
-      }
-      return
-    }
-
     if (event.type === "message.part.updated") {
       return
     }
@@ -1667,13 +1638,30 @@ const pendingPermissions: PendingPermission[] = []
 
 function createPermissionHandler(client: any) {
   return async (input: any, output: { status: "ask" | "deny" | "allow" }) => {
+    log("PERM_CALLED", `typeof input=${typeof input} keys=${input ? Object.keys(input).join(",") : "null"}`)
     if (!_creds) { output.status = "ask"; return }
 
     const sessionID = input.sessionID
     const permissionID = input.id
     const toolName = input.type ?? ""
 
-    const wechatId = findWechatSender(sessionID)
+    let wechatId = findWechatSender(sessionID)
+    if (!wechatId) {
+      try {
+        const sessionResp: any = await client.session.get({ path: { id: sessionID } })
+        let pid = sessionResp.parentID ?? sessionResp.data?.parentID
+        while (pid) {
+          wechatId = findWechatSender(pid)
+          if (wechatId) break
+          const parentResp: any = await client.session.get({ path: { id: pid } })
+          pid = parentResp.parentID ?? parentResp.data?.parentID
+        }
+      } catch { /* best effort */ }
+    }
+    if (!wechatId) {
+      // fallback: send to the first bound user
+      wechatId = wechatSid.keys().next().value ?? null
+    }
     if (!wechatId) {
       output.status = "ask"
       return
