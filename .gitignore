@@ -1,3 +1,11 @@
+opencode.json---
+bun.lock
+oc-wechat-bridge/bun.lock
+改造计划.md
+oc-wechat-bridge/改造计划.md
+*.rar
+ref/
+test/
 node_modules/
 .opencode/node_modules/
 .opencode/plugins/log/

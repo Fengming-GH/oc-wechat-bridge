@@ -45,6 +45,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOG_PATH = resolve(__dirname, "log", "wechat-bridge.log")
 const PROJECT_ROOT = resolve(__dirname, "..", "..")
 
+let _dtf: Intl.DateTimeFormat | null = null
+
 const HOME_DIR = process.env.HOME ?? process.env.USERPROFILE ?? "."
 const OLD_DATA_DIR = join(HOME_DIR, ".cli-bridge")
 const DATA_DIR = process.env.WECHAT_BRIDGE_DATA_DIR?.trim()
@@ -58,7 +60,7 @@ const BASE_URL = process.env.WECHAT_ILINK_BASE_URL?.trim()
   ?? "https://ilinkai.weixin.qq.com"
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 const CHANNEL_VERSION = "0.3.0"
-const LONG_POLL_TIMEOUT_MS = 35_000
+const LONG_POLL_TIMEOUT_MS = 20_000
 const SEND_TIMEOUT_MS = 15_000
 const CDN_DOWNLOAD_TIMEOUT_MS = 30_000
 const CDN_MAX_RETRIES = 3
@@ -251,17 +253,17 @@ async function updateSessionIcon(client: any, sid: string, status: "normal" | "d
 const sendFailCount = new Map<string, number>()
 const SEND_FAIL_THRESHOLD = 3
 
-function recordSendResult(sid: string | null, success: boolean, client: any) {
+async function recordSendResult(sid: string | null, success: boolean, client: any) {
   if (!sid) return
   const current = sendFailCount.get(sid) ?? 0
   if (success) {
     sendFailCount.set(sid, 0)
-    updateSessionIcon(client, sid, "normal")
+    await updateSessionIcon(client, sid, "normal")
   } else {
     const next = current + 1
     sendFailCount.set(sid, next)
     if (next >= SEND_FAIL_THRESHOLD) {
-      updateSessionIcon(client, sid, "degraded")
+      await updateSessionIcon(client, sid, "degraded")
     }
   }
 }
@@ -269,8 +271,7 @@ function recordSendResult(sid: string | null, success: boolean, client: any) {
 async function getOrCreateSession(client: any, wechatId: string, worktree: string): Promise<string> {
   const existing = wechatSid.get(wechatId)
   if (existing && sidTitle.has(existing)) {
-    updateSessionIcon(client, existing, "normal")
-    return existing
+    await updateSessionIcon(client, existing, "normal")    return existing
   }
 
   try {
@@ -703,13 +704,16 @@ async function sendText(
       account.token,
       SEND_TIMEOUT_MS,
     )
-    if (client) recordSendResult(findSidByRecipient(recipientId), true, client)
+    if (client) await recordSendResult(findSidByRecipient(recipientId), true, client)
   } catch (err: any) {
     if (err.message?.includes("Context token stale")) {
       log("SEND_STALE", `drop msg for ${recipientId.slice(0, 16)}`)
+      contextTokens.delete(recipientId)
+      contextTokens.delete(recipientId.replace(/@im\.wechat$/, ""))
+      saveContextTokens()
       return
     }
-    if (client) recordSendResult(findSidByRecipient(recipientId), false, client)
+    if (client) await recordSendResult(findSidByRecipient(recipientId), false, client)
     throw err
   }
 }
@@ -749,9 +753,9 @@ async function sendImage(
       account.token,
       SEND_TIMEOUT_MS,
     )
-    if (client) recordSendResult(findSidByRecipient(recipientId), true, client)
+    if (client) await recordSendResult(findSidByRecipient(recipientId), true, client)
   } catch (err) {
-    if (client) recordSendResult(findSidByRecipient(recipientId), false, client)
+    if (client) await recordSendResult(findSidByRecipient(recipientId), false, client)
     throw err
   }
 }
@@ -1663,7 +1667,8 @@ function createEventHandler(client: any) {
           if (_userMsgIds.size > 1000) _userMsgIds.clear()
         } else if ((info as any).role === "assistant" && info.error) {
           _pendingContinue.add(info.sessionID)
-      if (_pendingContinue.size > 500) _pendingContinue.clear()
+          if (!findWechatSender(info.sessionID)) _pendingContinue.delete(info.sessionID)
+          if (_pendingContinue.size > 100) _pendingContinue.clear()
           log("AUTO_CONT", `[${t(info.sessionID)}] error=${JSON.stringify(info.error).slice(0, 80)}`)
         }
       }
@@ -1685,6 +1690,8 @@ function createEventHandler(client: any) {
       const s = ev.properties.info
       sidTitle.delete(s.id)
       _modeCache.delete(s.id)
+      _pendingContinue.delete(s.id)
+      _compacted.delete(s.id)
       for (const [wx, sid] of wechatSid) {
         if (sid === s.id) { wechatSid.delete(wx); break }
       }

@@ -1,9 +1,0 @@
-WeChat - OpenCode Bridge v2.0
-
-使用方法：
-1. 安装 OpenCode：npm install -g @opencode-ai/sdk
-2. 双击 bridge.exe
-3. 用微信扫描终端二维码登录
-4. 在微信中发送消息即可与 AI 对话
-
-日志文件：bridge.exe 同目录下的 logs\ 文件夹
