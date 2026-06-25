@@ -102,6 +102,7 @@ const _fwdLastTool = new Map<string, string>()
 const _userMsgIds = new Set<string>()
 const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
+const _compacted = new Set<string>()
 const _skipMsgIds = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
@@ -1625,26 +1626,31 @@ function createEventHandler(client: any) {
           log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
         }
       }
+
+      // 上下文压缩后通知（等 AI 工作完毕后再发，不打断处理）
+      if (_compacted.has(sid)) {
+        _compacted.delete(sid)
+        const agentsFile = join(PROJECT_ROOT, "AGENTS.md")
+        if (existsSync(agentsFile)) {
+          try {
+            await client.session.prompt({
+              path: { id: sid },
+              body: { parts: [{ type: "text" as any, text: "上下文被压缩" }] },
+            })
+            log("AUTO_CONT", `[${t(sid)}] compact notified`)
+          } catch (err) {
+            log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
+          }
+        }
+      }
       return
     }
 
     if (event.type === "session.compacted") {
       const sid = (event as any).properties?.sessionID
       if (sid) {
-        try {
-          const contResp: any = await client.session.prompt({
-            path: { id: sid },
-            body: { parts: [{ type: "text" as any, text: "继续当前工作，注意本目录的规则文件 AGENTS.md 已更新" }] },
-          })
-          const contMsgId = contResp?.info?.id ?? contResp?.id
-          if (contMsgId) {
-            _skipMsgIds.add(contMsgId)
-            if (_skipMsgIds.size > 500) _skipMsgIds.clear()
-          }
-          log("AUTO_CONT", `[${t(sid)}] compact resume sent msg=${contMsgId?.slice(0, 16)}`)
-        } catch (err) {
-          log("AUTO_CONT_FAIL", `[${t(sid)}] ${err}`)
-        }
+        _compacted.add(sid)
+        log("AUTO_CONT", `[${t(sid)}] compact marked`)
       }
       return
     }
