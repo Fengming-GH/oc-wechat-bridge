@@ -7,7 +7,7 @@ import type {
   EventSessionIdle, EventSessionCreated, EventSessionDeleted, EventSessionUpdated, Session,
 } from "@opencode-ai/sdk"
 import { tool } from "@opencode-ai/plugin"
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto"
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
 import { appendFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, rmSync } from "node:fs"
 import { resolve, dirname, join, basename } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -33,18 +33,10 @@ const LONG_POLL_TIMEOUT_MS = 20_000
 const SEND_TIMEOUT_MS = 15_000
 const CDN_DOWNLOAD_TIMEOUT_MS = 30_000
 const CDN_MAX_RETRIES = 3
-const SESSION_MAP_REL_DIR = join(".opencode", "plugins", "wechat-bridge")
-const SESSION_MAP_FILE = "session-map.json"
-const MAX_IMAGE_MB = Number(process.env.WECHAT_MAX_IMAGE_MB) || 20
-const MAX_FILE_MB = Number(process.env.WECHAT_MAX_FILE_MB) || 50
-const MAX_INBOUND_IMAGE_MB = Number(process.env.WECHAT_MAX_INBOUND_IMAGE_MB) || 20
-const MAX_INBOUND_FILE_MB = Number(process.env.WECHAT_MAX_INBOUND_FILE_MB) || 50
-const BYTES_PER_MB = 1024 * 1024
 const RECENT_KEYS_MAX = 500
 const MSG_TYPE_USER = 1; const MSG_TYPE_BOT = 2
 const MSG_ITEM_TEXT = 1; const MSG_ITEM_IMAGE = 2; const MSG_ITEM_VOICE = 3; const MSG_ITEM_FILE = 4; const MSG_ITEM_VIDEO = 5
 const MSG_STATE_FINISH = 2
-const UPLOAD_MEDIA_TYPE_IMAGE = 1; const UPLOAD_MEDIA_TYPE_FILE = 3
 
 let syncBuffer = ""
 const contextTokens = new Map<string, string>()
@@ -140,11 +132,8 @@ function buildCdnUploadUrl(uploadParam: string, filekey: string): string {
 function initSessionCache(client: any) {
   setTimeout(async () => {
     try {
-      const resp: any = await client.session.list()
-      const all: Session[] = Array.isArray(resp) ? resp : resp.data ?? []
-      for (const s of all) {
-        if (!s.parentID) sidTitle.set(s.id, s.title)
-      }
+      const { flat } = await listAllSessions(client)
+      for (const s of flat) sidTitle.set(s.id, s.title)
       log("INIT", `cached ${sidTitle.size} sessions`)
     } catch (err) {
       log("INIT_FAIL", `${err}`)
@@ -232,7 +221,7 @@ async function getOrCreateSession(client: any, wechatId: string, _worktree: stri
     const first = all.find((s: Session) => !s.parentID)
     if (first) {
       wechatSid.set(wechatId, first.id)
-      sidTitle.set(first.id, `${WECHAT_ICON}${first.title}`)
+      sidTitle.set(first.id, first.title)
       await updateSessionIcon(client, first.id, "normal")
       saveState()
       return first.id
@@ -442,7 +431,6 @@ async function sendText(account: WechatCredentials, recipientId: string, text: s
 function startPollingLoop(account: WechatCredentials, client: any, signal: AbortSignal, worktree: string) {
   let backoff = 1_000
   ;(async () => {
-    loadState()
     log("POLL", "polling started")
     while (!signal.aborted) {
       try {
@@ -562,7 +550,7 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
     case "switch": case "切换": { const tgt = args.join(" ").trim(); if (!tgt) { await wx("请指定编号或 ID"); break }
       try { const { flat } = await listAllSessions(client); const n = parseInt(tgt); const m = (n>=1 && n<=flat.length) ? flat[n-1] : flat.find(s => s.id.startsWith(tgt)) ?? null; if (!m) { await wx(`未找到: ${tgt}`); break }
         const pv = wechatSid.get(senderId); wechatSid.set(senderId, m.id); sidTitle.set(m.id, m.title); saveState()
-        if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title ?? sidTitle.get(pv); if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
+        if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title; if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
         await updateSessionIcon(client, m.id, "normal"); await wx(`已切换到: ${m.title}`) } catch { await wx("切换失败") }; break }
     case "unbind": case "解绑": { const old = wechatSid.get(senderId)
       let oldTitle = sidTitle.get(old)
@@ -570,7 +558,7 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
       let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
       await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
-      try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, `${WECHAT_ICON}${nn}`); await wx(`已改名: ${nn}`) } catch { await wx("改名失败") }; break }
+      try { await client.session.update({ path: { id: sid }, body: { title: nn } }); await wx(`已改名: ${nn}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { const resp = await client.session.messages({ path: { id: sid }, query: { limit: 5 } }); const msgs = Array.isArray(resp) ? resp : resp.data ?? []; let mode: string | undefined; for (let i = msgs.length-1; i>=0; i--) { if (msgs[i].info?.role === "assistant") { mode = msgs[i].info.mode; break } }; await wx(`当前模式: ${mode ?? _modeCache.get(sid) ?? "build"}`) } catch { await wx(`模式: ${_modeCache.get(sid) ?? "build"}`) }; break }
     case "help": case "帮助": await wx("/stop /status /switch N /new N\n/unbind /rename /mode /help\n审批: 同意 拒绝"); break
@@ -592,8 +580,8 @@ async function handleFirstContact(text: string, senderId: string, account: Wecha
 function migrateOldStateFiles(worktree: string) {
   if (existsSync(STATE_FILE)) return
   let sessionMap: Record<string, string> = {}
-  const oldDir = join(resolveWorktree(worktree), SESSION_MAP_REL_DIR)
-  const oldMap = join(oldDir, SESSION_MAP_FILE)
+  const oldDir = join(resolveWorktree(worktree), ".opencode", "plugins", "wechat-bridge")
+  const oldMap = join(oldDir, "session-map.json")
   try {
     if (existsSync(oldMap)) {
       sessionMap = JSON.parse(readFileSync(oldMap, "utf-8"))
@@ -629,34 +617,6 @@ async function lazyInit(client: any, worktree: string, signal: AbortSignal) {
 // ============================================================
 // Section 8:  CDN Upload / Download
 // ============================================================
-async function uploadToCdn(account: WechatCredentials, filePath: string, mediaType: number, recipientId: string): Promise<{ downloadParam: string; aesKey: Buffer; filesize: number }> {
-  const fileBuf = readFileSync(filePath)
-  const rawsize = fileBuf.length
-  const rawfilemd5 = createHash("md5").update(fileBuf).digest("hex")
-  const filesize = aesEcbPaddedSize(rawsize)
-  const filekey = randomBytes(16).toString("hex")
-  const aesKey = randomBytes(16)
-  const uploadResp = JSON.parse(await apiFetch("ilink/bot/getuploadurl", { filekey, media_type: mediaType, to_user_id: recipientId, rawsize, rawfilemd5, filesize, aeskey: aesKey.toString("hex"), no_need_thumb: true, base_info: { channel_version: CHANNEL_VERSION } }, account.token, SEND_TIMEOUT_MS))
-  if (!uploadResp.upload_param) throw new Error("getUploadUrl: no upload_param")
-  const ciphertext = encryptAesEcb(fileBuf, aesKey)
-  const cdnUrl = buildCdnUploadUrl(uploadResp.upload_param, filekey)
-  for (let attempt = 1; attempt <= CDN_MAX_RETRIES; attempt++) {
-    try {
-      const cdnRes = await fetch(cdnUrl, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array(ciphertext) })
-      if (cdnRes.status >= 400 && cdnRes.status < 500) throw new Error(`CDN client err ${cdnRes.status}`)
-      if (cdnRes.status !== 200) throw new Error(`CDN server err ${cdnRes.status}`)
-      const downloadParam = cdnRes.headers.get("x-encrypted-param")
-      if (!downloadParam) throw new Error("CDN: missing x-encrypted-param")
-      return { downloadParam, aesKey, filesize }
-    } catch (err: any) {
-      if (err.message?.includes("client err")) throw err
-      if (attempt >= CDN_MAX_RETRIES) throw err
-      log("CDN_RETRY", `upload ${attempt}: ${err.message}`)
-    }
-  }
-  throw new Error("CDN upload failed")
-}
-
 async function downloadFromCdn(media: { encrypt_query_param?: string; full_url?: string; aes_key?: string }): Promise<Buffer> {
   let cdnUrl: string
   if (media.full_url?.trim()) cdnUrl = media.full_url.trim()
@@ -685,9 +645,9 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
   try { await client.app.log({ body: { service: "wechat-bridge", level: "info", message: "plugin loaded" } }) } catch { /* */ }
   migrateOldDataDir()
   migrateOldStateFiles(worktree)
+  _projectDirs = findProjectDirs(worktree)
   initSessionCache(client)
   loadState()
-  _projectDirs = findProjectDirs(worktree)
   const abortController = new AbortController()
   lazyInit(client, worktree, abortController.signal)
   return {
