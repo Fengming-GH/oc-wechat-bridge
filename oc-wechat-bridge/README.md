@@ -80,7 +80,7 @@ edit
 
 ## 技术栈
 
-- 单文件 TypeScript（~1800 行）
+- 单文件 TypeScript（~740 行）
 - 零外部运行时依赖（仅 OC SDK）
 - 原生 Web Fetch API
 - AES-128-ECB 加密传输（CDN 媒体文件）
