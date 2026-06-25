@@ -6,8 +6,18 @@ import type { Plugin } from "@opencode-ai/plugin"
 import type {
   EventSessionIdle, EventSessionCreated, EventSessionDeleted, EventSessionUpdated, Session,
 } from "@opencode-ai/sdk"
-import { tool } from "@opencode-ai/plugin"
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
+const tool: any = Object.assign(
+  (x: any) => x,
+  {
+    schema: {
+      string: () => {
+        const obj: any = { _def: { typeName: "ZodString" }, describe(d: string) { this._def.description = d; return this } }
+        return obj
+      },
+    },
+  },
+)
 import { appendFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, rmSync } from "node:fs"
 import { resolve, dirname, join, basename } from "node:path"
 import { fileURLToPath } from "node:url"
