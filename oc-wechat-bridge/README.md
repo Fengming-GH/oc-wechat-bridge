@@ -80,6 +80,7 @@ edit
 
 - 单文件 TypeScript（~740 行）
 - 零外部运行时依赖（仅 Node 内置模块）
+- 基于微信官方 iLink Bot API 开发，非逆向/非破解
 - 原生 Web Fetch API
 - AES-128-ECB 加密传输（CDN 媒体文件）
 - 事件驱动架构（`message.part.updated` / `session.idle` 等）

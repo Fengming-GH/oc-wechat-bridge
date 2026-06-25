@@ -152,7 +152,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 | **全局（所有项目）** | 复制 `.ts` 到 `~/.opencode/plugins/wechat-bridge.ts` |
 | **项目级** | 复制 `.ts` 到 `项目/.opencode/plugins/wechat-bridge.ts` |
 
-**零依赖说明：** 该插件已内联所有运行时依赖（`tool` 函数），仅使用 Node.js 内置模块（`node:crypto`、`node:fs`、`node:path`、`node:url`、`node:child_process`）。不需要 `package.json`、`node_modules/`、`npm install`。复制 `.ts` 文件即用。
+**零依赖说明：** 该插件已内联所有运行时依赖（`tool` 函数），仅使用 Node.js 内置模块（`node:crypto`、`node:fs`、`node:path`、`node:url`、`node:child_process`）。基于微信官方 iLink Bot API 开发，非逆向/非破解。不需要 `package.json`、`node_modules/`、`npm install`。复制 `.ts` 文件即用。
 
 **首次使用：**
 
