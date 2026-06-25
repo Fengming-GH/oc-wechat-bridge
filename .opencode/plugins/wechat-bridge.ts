@@ -955,6 +955,7 @@ async function processInboundMessage(
 
   if (raw.context_token) {
     contextTokens.set(senderId, raw.context_token)
+    if (contextTokens.size > 500) contextTokens.clear()
     saveContextTokens()
   }
 
@@ -1578,6 +1579,7 @@ function createEventHandler(client: any) {
 
       _fwdLastTool.delete(sid)
       _thinkingSent.delete(sid)
+      _fwdQueue.delete(sid)
 
       await updateSessionIcon(client, sid, "normal")
 
@@ -1676,6 +1678,7 @@ function createEventHandler(client: any) {
       const ev = event as EventSessionDeleted
       const s = ev.properties.info
       sidTitle.delete(s.id)
+      _modeCache.delete(s.id)
       for (const [wx, sid] of wechatSid) {
         if (sid === s.id) { wechatSid.delete(wx); break }
       }
