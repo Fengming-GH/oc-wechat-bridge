@@ -1,6 +1,6 @@
 # OC Plugins
 
-OpenCode 插件合集，面向嵌入式项目 BT-Valve（CH592 蓝牙阀门）开发，已全部开源到 GitHub 并发布到 npm。
+OpenCode 插件合集，已全部开源到 GitHub。
 
 ## 目录
 
