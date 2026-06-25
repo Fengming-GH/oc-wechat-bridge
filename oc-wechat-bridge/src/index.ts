@@ -20,13 +20,11 @@ const LOG_PATH = resolve(__dirname, "log", "wechat-bridge.log")
 const PROJECT_ROOT = resolve(__dirname, "..", "..")
 try { mkdirSync(join(__dirname, "log"), { recursive: true }) } catch { /* ok */ }
 
-let _dtf: Intl.DateTimeFormat | null = null
 const HOME_DIR = process.env.HOME ?? process.env.USERPROFILE ?? "."
 const OLD_DATA_DIR = join(HOME_DIR, ".cli-bridge")
 const DATA_DIR = process.env.WECHAT_BRIDGE_DATA_DIR?.trim() ?? join(HOME_DIR, ".opencode", "wechat-bridge")
 const CREDENTIALS_FILE = join(DATA_DIR, "account.json")
-const SYNC_BUF_FILE = join(DATA_DIR, "sync_buf.txt")
-const CONTEXT_TOKENS_FILE = join(DATA_DIR, "context_tokens.json")
+const STATE_FILE = join(DATA_DIR, "state.json")
 const ATTACHMENTS_DIR = join(DATA_DIR, "inbound-attachments")
 const BASE_URL = process.env.WECHAT_ILINK_BASE_URL?.trim() ?? "https://ilinkai.weixin.qq.com"
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
@@ -47,7 +45,6 @@ const MSG_TYPE_USER = 1; const MSG_TYPE_BOT = 2
 const MSG_ITEM_TEXT = 1; const MSG_ITEM_IMAGE = 2; const MSG_ITEM_VOICE = 3; const MSG_ITEM_FILE = 4; const MSG_ITEM_VIDEO = 5
 const MSG_STATE_FINISH = 2
 const UPLOAD_MEDIA_TYPE_IMAGE = 1; const UPLOAD_MEDIA_TYPE_FILE = 3
-const DEBUG = process.env.WECHAT_OPENCODE_DEBUG?.trim() === "1"
 
 let syncBuffer = ""
 const contextTokens = new Map<string, string>()
@@ -58,12 +55,13 @@ const wechatSid = new Map<string, string>()
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
 const _modeCache = new Map<string, string>()
-const _pendingPermByWx = new Map<string, { sessionID: string; permissionID: string }>()
+
 const _thinkingSent = new Set<string>()
 const _fwdLastTool = new Map<string, string>()
 const _userMsgIds = new Set<string>()
 const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
+const CONTINUE_ERRORS = new Set(["MessageOutputLengthError", "APIError", "UnknownError"])
 const _compacted = new Set<string>()
 const _skipMsgIds = new Set<string>()
 
@@ -210,7 +208,7 @@ async function recordSendResult(sid: string | null, success: boolean, client: an
   }
 }
 
-async function getOrCreateSession(client: any, wechatId: string, worktree: string): Promise<string> {
+async function getOrCreateSession(client: any, wechatId: string, _worktree: string): Promise<string> {
   const existing = wechatSid.get(wechatId)
   if (existing && sidTitle.has(existing)) {
     await updateSessionIcon(client, existing, "normal")
@@ -222,7 +220,7 @@ async function getOrCreateSession(client: any, wechatId: string, worktree: strin
     const sid = resp.id ?? resp.sessionID ?? resp.data?.id
     if (sid) {
       wechatSid.set(wechatId, sid); sidTitle.set(sid, title)
-      saveSessionMapping(worktree)
+      saveState()
       await updateSessionIcon(client, sid, "normal")
       log("SESSION", `created [${t(sid)}] for ${wechatId.slice(0, 8)}`)
       return sid
@@ -236,7 +234,7 @@ async function getOrCreateSession(client: any, wechatId: string, worktree: strin
       wechatSid.set(wechatId, first.id)
       sidTitle.set(first.id, `${WECHAT_ICON}${first.title}`)
       await updateSessionIcon(client, first.id, "normal")
-      saveSessionMapping(worktree)
+      saveState()
       return first.id
     }
   } catch { /* best effort */ }
@@ -256,51 +254,6 @@ function findWechatSender(sid: string): string | null {
 
 function resolveWorktree(worktree: string): string {
   return (!worktree || worktree === "/" || worktree === "\\") ? PROJECT_ROOT : worktree
-}
-
-function sessionMapPath(worktree: string): string {
-  return join(resolveWorktree(worktree), SESSION_MAP_REL_DIR, SESSION_MAP_FILE)
-}
-
-function loadSessionMapping(worktree: string) {
-  const newFp = sessionMapPath(worktree)
-  let fp = newFp
-  if (!existsSync(fp)) {
-    const oldFp = join(worktree, SESSION_MAP_REL_DIR, SESSION_MAP_FILE)
-    if (worktree !== resolveWorktree(worktree) && existsSync(oldFp)) {
-      try {
-        mkdirSync(join(resolveWorktree(worktree), SESSION_MAP_REL_DIR), { recursive: true })
-        writeFileSync(newFp, readFileSync(oldFp))
-        try { rmSync(oldFp) } catch { }
-        log("MAP", `migrated to ${newFp}`)
-        fp = newFp
-      } catch (e) { log("MAP_MIGRATE_ERR", `${e}`); fp = oldFp }
-    }
-  }
-  try {
-    if (!existsSync(fp)) return
-    const raw = JSON.parse(readFileSync(fp, "utf-8"))
-    if (typeof raw !== "object" || raw === null) return
-    for (const [wx, sid] of Object.entries(raw)) {
-      if (typeof wx === "string" && typeof sid === "string") {
-        const key = wx.replace(/@im\.wechat$/, "")
-        wechatSid.set(key, sid)
-        if (wx !== key) wechatSid.set(wx, sid)
-      }
-    }
-    log("MAP", `restored ${wechatSid.size} mappings`)
-  } catch (e: any) { log("MAP_LOAD_ERR", `${e.message}`) }
-}
-
-function saveSessionMapping(worktree: string) {
-  const dir = join(resolveWorktree(worktree), SESSION_MAP_REL_DIR)
-  try { mkdirSync(dir, { recursive: true }) } catch { /* ok */ }
-  const fp = join(dir, SESSION_MAP_FILE)
-  const tmp = fp + ".tmp"
-  try {
-    writeFileSync(tmp, JSON.stringify(Object.fromEntries(wechatSid), null, 2), "utf-8")
-    renameSync(tmp, fp)
-  } catch (e) { log("MAP_WRITE_ERR", `${e}`) }
 }
 
 function findProjectDirs(worktree: string): string[] {
@@ -333,7 +286,7 @@ function migrateOldDataDir() {
   }
   log("MIGRATE", `restoring old creds from ${OLD_DATA_DIR}`)
   try {
-    for (const f of ["account.json", "sync_buf.txt", "context_tokens.json", "wechat-login.html"]) {
+    for (const f of ["account.json", "wechat-login.html"]) {
       const src = join(OLD_DATA_DIR, f)
       if (existsSync(src)) renameSync(src, join(DATA_DIR, f))
     }
@@ -372,23 +325,26 @@ async function validateCredentials(cred: WechatCredentials): Promise<string | nu
   } catch { return null }
 }
 
-function loadSyncBuffer(): string {
-  try { if (!existsSync(SYNC_BUF_FILE)) return ""; return readFileSync(SYNC_BUF_FILE, "utf-8") } catch { return "" }
+function saveState() {
+  ensureDataDir()
+  const tmp = STATE_FILE + ".tmp"
+  const ct: Record<string, string> = {}
+  for (const [k, v] of contextTokens) { if (!k.endsWith("@im.wechat")) ct[k] = v }
+  const sm: Record<string, string> = {}
+  for (const [wx, sid] of wechatSid) { if (!wx.endsWith("@im.wechat")) sm[wx] = sid }
+  const state: any = { syncBuf: syncBuffer, contextTokens: ct }
+  if (Object.keys(sm).length) state.sessionMap = sm
+  try { writeFileSync(tmp, JSON.stringify(state), "utf-8"); renameSync(tmp, STATE_FILE) } catch (e) { log("STATE_WRITE_ERR", `${e}`) }
 }
-function saveSyncBuffer(buf: string) {
-  ensureDataDir(); try { writeFileSync(SYNC_BUF_FILE, buf, "utf-8") } catch { /* ok */ }
-}
-function saveContextTokens() {
-  ensureDataDir(); try { writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify(Object.fromEntries(contextTokens)), "utf-8") } catch { /* ok */ }
-}
-function loadContextTokens() {
+function loadState() {
   try {
-    if (!existsSync(CONTEXT_TOKENS_FILE)) return
-    const raw = JSON.parse(readFileSync(CONTEXT_TOKENS_FILE, "utf-8"))
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === "string") { const key = k.replace(/@im\.wechat$/, ""); contextTokens.set(key, v); if (k !== key) contextTokens.set(k, v) }
-    }
-  } catch { /* ok */ }
+    if (!existsSync(STATE_FILE)) { log("STATE", "not found"); return }
+    const raw = JSON.parse(readFileSync(STATE_FILE, "utf-8"))
+    if (raw.syncBuf) syncBuffer = raw.syncBuf
+    if (raw.contextTokens) for (const [k, v] of Object.entries(raw.contextTokens)) contextTokens.set(k, v as string)
+    if (raw.sessionMap) for (const [wx, sid] of Object.entries(raw.sessionMap)) wechatSid.set(wx, sid as string)
+    log("STATE", `restored buf=${!!raw.syncBuf} tokens=${Object.keys(raw.contextTokens??{}).length} map=${Object.keys(raw.sessionMap??{}).length}`)
+  } catch (e: any) { log("STATE_LOAD_ERR", `${e.message}`) }
 }
 
 async function qrCodeLogin(): Promise<WechatCredentials> {
@@ -452,7 +408,7 @@ async function getUpdates(account: WechatCredentials, timeoutMs: number, signal?
   if (!raw.trim()) return { msgs: [], get_updates_buf: null }
   const parsed = JSON.parse(raw)
   const newBuf = parsed.get_updates_buf ?? null
-  if (newBuf) { syncBuffer = newBuf; saveSyncBuffer(syncBuffer) }
+  if (newBuf) { syncBuffer = newBuf; saveState() }
   return { msgs: parsed.msgs ?? [], get_updates_buf: newBuf }
 }
 
@@ -465,7 +421,7 @@ async function sendText(account: WechatCredentials, recipientId: string, text: s
   const trimmed = text.trim()
   if (!trimmed) return
   let token = contextToken
-  if (!token) token = contextTokens.get(recipientId)
+  if (!token) token = contextTokens.get(recipientId) ?? contextTokens.get(recipientId.replace(/@im\.wechat$/, ""))
   if (!token) { log("SEND_SKIP", `no context token for ${recipientId.slice(0,16)}`); return }
   try {
     await apiFetch("ilink/bot/sendmessage", {
@@ -474,7 +430,7 @@ async function sendText(account: WechatCredentials, recipientId: string, text: s
     }, account.token, SEND_TIMEOUT_MS)
     if (client) await recordSendResult(findSidByRecipient(recipientId), true, client)
   } catch (err: any) {
-    if (err.message?.includes("Context token stale")) { contextTokens.delete(recipientId); saveContextTokens(); return }
+    if (err.message?.includes("Context token stale")) { contextTokens.delete(recipientId); saveState(); return }
     if (client) await recordSendResult(findSidByRecipient(recipientId), false, client)
     throw err
   }
@@ -486,8 +442,7 @@ async function sendText(account: WechatCredentials, recipientId: string, text: s
 function startPollingLoop(account: WechatCredentials, client: any, signal: AbortSignal, worktree: string) {
   let backoff = 1_000
   ;(async () => {
-    syncBuffer = loadSyncBuffer()
-    loadContextTokens()
+    loadState()
     log("POLL", "polling started")
     while (!signal.aborted) {
       try {
@@ -498,7 +453,7 @@ function startPollingLoop(account: WechatCredentials, client: any, signal: Abort
         if (signal.aborted) break
         if (err.name === "AbortError") continue
         if (err.message?.includes("session timed out")) { log("POLL_FATAL", err.message); break }
-        if (err.message?.includes("Context token stale")) { contextTokens.clear(); saveContextTokens(); continue }
+        if (err.message?.includes("Context token stale")) { contextTokens.clear(); saveState(); continue }
         log("POLL_RETRY", `${err.message}, backoff=${backoff}`)
         await sleep(Math.min(backoff, 30_000)); backoff *= 2
       }
@@ -520,7 +475,7 @@ async function processInboundMessage(raw: any, account: WechatCredentials, clien
   recentMessageKeys.add(msgKey); recentMessageOrder.push(msgKey)
   while (recentMessageOrder.length > RECENT_KEYS_MAX) recentMessageKeys.delete(recentMessageOrder.shift()!)
   const senderId = raw.from_user_id ?? "unknown"
-  if (raw.context_token) { contextTokens.set(senderId, raw.context_token); saveContextTokens() }
+  if (raw.context_token) { contextTokens.set(senderId, raw.context_token); saveState() }
   const downloadedPaths: string[] = []
   for (const att of attachments) {
     try { const enc = await downloadFromCdn(att.media); const pt = decryptInboundMediaPayload(enc, att.aesKey); downloadedPaths.push(saveAttachment(att.fileName || `wechat-${att.kind}`, pt)) }
@@ -529,17 +484,6 @@ async function processInboundMessage(raw: any, account: WechatCredentials, clien
   const trimmed = text.trim()
   if (trimmed.startsWith("/")) { await handleCommand(trimmed, senderId, account, client, worktree); return }
   if (!wechatSid.has(senderId)) { if (await handleFirstContact(text, senderId, account, client, worktree)) return }
-  const approve = trimmed === "同意" || trimmed === "yes" || trimmed === "y"
-  const reject = trimmed === "拒绝" || trimmed === "no" || trimmed === "n"
-  if (approve || reject) {
-    const perm = _pendingPermByWx.get(senderId)
-    if (perm) {
-      _pendingPermByWx.delete(senderId)
-      try { await client.postSessionIdPermissionsPermissionId({ path: { id: perm.sessionID, permissionID: perm.permissionID }, body: { response: approve ? "once" : "reject" } }); await sendText(account, senderId, approve ? "已批准" : "已拒绝", undefined, client) }
-      catch { await sendText(account, senderId, "审批失败", undefined, client) }
-    } else await sendText(account, senderId, "无待审批请求", undefined, client)
-    return
-  }
   log("WX_IN", `[${senderId.slice(0,8)}] ${trimmed.slice(0,80)}`)
   try {
     const sid = await getOrCreateSession(client, senderId, worktree)
@@ -614,14 +558,15 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
     case "stop": case "停止": { const sid = wechatSid.get(senderId); if (sid) try { await client.session.abort({ path: { id: sid } }) } catch { /* ok */ }; await wx("已中断"); break }
     case "status": case "状态": case "会话": { try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, wechatSid.get(senderId)); await wx((sl.length ? sl : ["(无会话)"]).join("\n") + "\n回复 /switch <编号> 切换") } catch { await wx("获取失败") }; break }
     case "new": case "新建": { const n = parseInt(args[0]); let td: string | undefined; if (!isNaN(n)) { try { const { flat } = await listAllSessions(client); td = flat[n-1]?.directory } catch { /* */ } }
-      try { const ttl = wechatTitle(); const resp: any = await client.session.create({ query: { directory: td || resolveDir(null, worktree) }, body: { title: ttl } }); const ns = resp.id ?? resp.sessionID ?? resp.data?.id; if (ns) { wechatSid.set(senderId, ns); sidTitle.set(ns, ttl); saveSessionMapping(worktree); await updateSessionIcon(client, ns, "normal"); await wx(`已创建 [${t(ns)}]`) } } catch { await wx("创建失败") }; break }
+      try { const ttl = wechatTitle(); const resp: any = await client.session.create({ query: { directory: td || resolveDir(null, worktree) }, body: { title: ttl } }); const ns = resp.id ?? resp.sessionID ?? resp.data?.id; if (ns) { wechatSid.set(senderId, ns); sidTitle.set(ns, ttl); saveState(); await updateSessionIcon(client, ns, "normal"); await wx(`已创建 [${t(ns)}]`) } } catch { await wx("创建失败") }; break }
     case "switch": case "切换": { const tgt = args.join(" ").trim(); if (!tgt) { await wx("请指定编号或 ID"); break }
       try { const { flat } = await listAllSessions(client); const n = parseInt(tgt); const m = (n>=1 && n<=flat.length) ? flat[n-1] : flat.find(s => s.id.startsWith(tgt)) ?? null; if (!m) { await wx(`未找到: ${tgt}`); break }
-        const pv = wechatSid.get(senderId); wechatSid.set(senderId, m.id); sidTitle.set(m.id, m.title); saveSessionMapping(worktree)
-        if (pv && pv !== m.id) { const pt = sidTitle.get(pv); if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
+        const pv = wechatSid.get(senderId); wechatSid.set(senderId, m.id); sidTitle.set(m.id, m.title); saveState()
+        if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title ?? sidTitle.get(pv); if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
         await updateSessionIcon(client, m.id, "normal"); await wx(`已切换到: ${m.title}`) } catch { await wx("切换失败") }; break }
     case "unbind": case "解绑": { const old = wechatSid.get(senderId)
-      if (old) { const pt = sidTitle.get(old); if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: old }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(old, stripIconPrefix(pt)) }; wechatSid.delete(senderId); saveSessionMapping(worktree) }
+      let oldTitle = sidTitle.get(old)
+      if (old) { try { const { flat } = await listAllSessions(client); const found = flat.find(s => s.id === old); if (found) oldTitle = found.title } catch { }; if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) { const stripped = stripIconPrefix(oldTitle); try { await client.session.update({ path: { id: old }, body: { title: stripped } }) } catch { }; sidTitle.set(old, stripped) }; wechatSid.delete(senderId); saveState() }
       let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
       await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
@@ -644,10 +589,36 @@ async function handleFirstContact(text: string, senderId: string, account: Wecha
   return true
 }
 
+function migrateOldStateFiles(worktree: string) {
+  if (existsSync(STATE_FILE)) return
+  let sessionMap: Record<string, string> = {}
+  const oldDir = join(resolveWorktree(worktree), SESSION_MAP_REL_DIR)
+  const oldMap = join(oldDir, SESSION_MAP_FILE)
+  try {
+    if (existsSync(oldMap)) {
+      sessionMap = JSON.parse(readFileSync(oldMap, "utf-8"))
+      try { rmSync(oldMap) } catch {}
+      try { if (readdirSync(oldDir).length === 0) rmSync(oldDir) } catch {}
+      log("MIGRATE", "migrated session-map.json")
+    }
+  } catch { log("MIGRATE", "session-map.json skip") }
+  let syncBuf = ""
+  const oldSyncBuf = join(DATA_DIR, "sync_buf.txt")
+  try {
+    if (existsSync(oldSyncBuf)) { syncBuf = readFileSync(oldSyncBuf, "utf-8"); try { rmSync(oldSyncBuf) } catch {}; log("MIGRATE", "migrated sync_buf.txt") }
+  } catch {}
+  let ctxTokens: Record<string, string> = {}
+  const oldCtx = join(DATA_DIR, "context_tokens.json")
+  try {
+    if (existsSync(oldCtx)) { ctxTokens = JSON.parse(readFileSync(oldCtx, "utf-8")); try { rmSync(oldCtx) } catch {}; log("MIGRATE", "migrated context_tokens.json") }
+  } catch {}
+  ensureDataDir()
+  try { writeFileSync(STATE_FILE, JSON.stringify({ syncBuf, contextTokens: ctxTokens, sessionMap }), "utf-8"); log("MIGRATE", "all -> state.json") } catch (e) { log("MIGRATE_ERR", `${e}`) }
+}
+
 // ---- lazy init (credentials + polling) ----
 let _creds: WechatCredentials | null = null
 async function lazyInit(client: any, worktree: string, signal: AbortSignal) {
-  migrateOldDataDir()
   let creds = loadCredentials()
   if (!creds) { creds = await qrCodeLogin() }
   else { const reason = await validateCredentials(creds); if (reason) { log("CRED", `${reason}, re-login`); creds = await qrCodeLogin() } else log("CRED", `loaded: ${creds.accountId}`) }
@@ -713,8 +684,9 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
   try { mkdirSync(dirname(LOG_PATH), { recursive: true }) } catch { /* ok */ }
   try { await client.app.log({ body: { service: "wechat-bridge", level: "info", message: "plugin loaded" } }) } catch { /* */ }
   migrateOldDataDir()
+  migrateOldStateFiles(worktree)
   initSessionCache(client)
-  loadSessionMapping(worktree)
+  loadState()
   _projectDirs = findProjectDirs(worktree)
   const abortController = new AbortController()
   lazyInit(client, worktree, abortController.signal)
@@ -750,16 +722,15 @@ function createEventHandler(client: any) {
       try { const resp: any = await client.session.messages({ path: { id: sid }, query: { limit: 15 } }); const msgs = Array.isArray(resp) ? resp : resp.data ?? []
         for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].info?.role === "assistant") { if (msgs[i].info.mode) _modeCache.set(sid, msgs[i].info.mode); break } } } catch { /* */ }
       _thinkingSent.delete(sid)
-      if (_pendingContinue.has(sid)) { _pendingContinue.delete(sid); try { await client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text" as any, text: "检测到错误，继续工作" }] } }) } catch { } }
+      if (_pendingContinue.has(sid)) { _pendingContinue.delete(sid); try { await client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text" as any, text: "检测到异常，请继续" }] } }) } catch { } }
       if (_compacted.has(sid)) { _compacted.delete(sid); try { await client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text" as any, text: "上下文被压缩" }] } }) } catch { } }
       return
     }
     if (event.type === "session.compacted") { const sid = (event as any).properties?.sessionID; if (sid) _compacted.add(sid); return }
-    if (event.type === "message.updated") { const info = event.properties?.info; if (info?.id) { if (info.role === "user") _userMsgIds.add(info.id); else if (info.role === "assistant" && info.error) { _pendingContinue.add(info.sessionID); if (_pendingContinue.size > 100) _pendingContinue.clear() } } return }
+    if (event.type === "message.updated") { const info = event.properties?.info; if (info?.id) { if (info.role === "user") _userMsgIds.add(info.id); else if (info.role === "assistant" && info.error && CONTINUE_ERRORS.has(info.error.name)) { _pendingContinue.add(info.sessionID); if (_pendingContinue.size > 100) _pendingContinue.clear() } } return }
     if (event.type === "session.created") { const s = (event as EventSessionCreated).properties.info; if (!s.parentID) sidTitle.set(s.id, s.title); return }
     if (event.type === "session.deleted") { const s = (event as EventSessionDeleted).properties.info; sidTitle.delete(s.id); _modeCache.delete(s.id); _pendingContinue.delete(s.id); _compacted.delete(s.id); for (const [wx, sid] of wechatSid) { if (sid === s.id) { wechatSid.delete(wx); break } } return }
     if (event.type === "session.updated") { const s = event.properties.info as Session; if (!s.parentID && sidTitle.get(s.id) !== s.title) sidTitle.set(s.id, s.title); return }
-    if (event.type === "permission.updated") { const p = event.properties; if (p?.sessionID && p?.id) { const wxId = findWechatSender(p.sessionID); if (wxId) { _pendingPermByWx.set(wxId, { sessionID: p.sessionID, permissionID: p.id }); setTimeout(() => { if (_pendingPermByWx.get(wxId)?.permissionID === p.id) _pendingPermByWx.delete(wxId) }, 5 * 60 * 1000); try { const desc = p.metadata?.command ?? p.title ?? `工具:${p.type}`; await sendText(_creds!, wxId, `需要确认：${desc.slice(0,200)}？\n回复 同意 或 拒绝`, undefined, client) } catch { /* */ } } } return }
     if (event.type === "message.part.updated") { const p = event.properties?.part; const sid = p?.sessionID; if (!sid || _skipMsgIds.has(p.messageID)) return; const wxId = findWechatSender(sid); if (!wxId) return
       if (p.type === "reasoning") { if (p.text && !_thinkingSent.has(sid)) { _thinkingSent.add(sid); enqueueSend(sid, () => sendText(_creds!, wxId, "思考中...", undefined, client)) } }
       else if (p.type === "tool") { const name = p.tool ?? ""; if (name && _fwdLastTool.get(sid) !== name) { _fwdLastTool.set(sid, name); enqueueSend(sid, () => sendText(_creds!, wxId, name, undefined, client)) } }
