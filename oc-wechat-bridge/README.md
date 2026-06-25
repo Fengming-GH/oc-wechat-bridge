@@ -1,6 +1,6 @@
 # oc-wechat-bridge
 
-微信 ↔ OpenCode 双向桥接插件。在微信中直接与 OC AI 对话，接收实时进度、切换会话、审批权限。
+微信 ↔ OpenCode 双向桥接插件。在微信中直接与 OC AI 对话，接收实时进度、切换会话。集成跨会话转发与自动续命。
 
 ## 功能
 
@@ -9,8 +9,8 @@
 - **多项目目录**：自动发现同级带 `.opencode/` 的项目，会话按目录分组显示
 - **会话管理**：全局编号 `/switch` 跨目录切换、`/status` 查看全貌
 
-- **自动恢复**：AI 出错或上下文压缩后自动重试，微信端无感
-- **跨会话转发**：AI 可通过 `！` 指令将消息转发到其他会话
+- **自动恢复**：AI 出错或上下文压缩后自动重试，微信端无感（集成了 [oc-auto-continue](https://github.com/Fengming-GH/oc-auto-continue)）
+- **跨会话转发**：AI 可通过 `！` 指令将消息转发到其他会话（集成了 [oc-forward](https://github.com/Fengming-GH/oc-forward)）
 - **消息不阻塞**：`promptAsync` 注射消息后立即返回，AI 处理期间仍可接收新消息
 
 ## 安装
@@ -79,7 +79,7 @@ edit
 ## 技术栈
 
 - 单文件 TypeScript（~740 行）
-- 零外部运行时依赖（仅 OC SDK）
+- 零外部运行时依赖（仅 Node 内置模块）
 - 原生 Web Fetch API
 - AES-128-ECB 加密传输（CDN 媒体文件）
 - 事件驱动架构（`message.part.updated` / `session.idle` 等）
