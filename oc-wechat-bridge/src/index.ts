@@ -1158,7 +1158,7 @@ function formatDirSessions(
     const dirSessions = flat.filter(s => dirMap.get(s.id) === di)
     if (dirSessions.length === 0) continue
     const dirName = getNick(_projectDirs[di])
-    lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`, "")
+    lines.push(`📁 ${dirName} — ${dirSessions.length} 个会话`)
     for (const s of dirSessions) {
       globalIdx++
       const isCurrent = s.id === currentSid
@@ -1581,42 +1581,29 @@ function createEventHandler(client: any) {
 
       await updateSessionIcon(client, sid, "normal")
 
-      let finalText = ""
+      // 收集当前轮次的工具名（仅用于日志），文字已通过 message.part.updated 实时发出
+      const toolNames: string[] = []
       try {
         const msgsResp: any = await client.session.messages({ path: { id: sid }, query: { limit: 15 } })
         const msgs = Array.isArray(msgsResp) ? msgsResp : msgsResp.data ?? []
-        const toolNames: string[] = []
-        const textParts: string[] = []
         for (let i = msgs.length - 1; i >= 0; i--) {
           const msg = msgs[i]
           if (msg.info?.role === "assistant") {
             if (msg.info.mode) _modeCache.set(sid, msg.info.mode)
-            const msgParts = Array.isArray(msg.parts) ? msg.parts : []
-            for (const p of msgParts) {
+            for (const p of (Array.isArray(msg.parts) ? msg.parts : [])) {
               if (p.type === "tool") {
                 const name = p.tool ?? ""
                 if (name && !toolNames.includes(name)) toolNames.push(name)
-              } else if (p.type === "text" && !p.ignored) {
-                const t = p.text?.trim()
-                if (t) textParts.push(t)
               }
             }
           }
           if (msg.info?.role === "user") break
         }
-        textParts.reverse()
-        const all = [...toolNames, ...textParts].filter(Boolean)
-        finalText = all.join("\n").trim()
-        log("IDLE_OUT", `toolNames=${JSON.stringify(toolNames)} textCount=${textParts.length} finalLen=${finalText.length}`)
       } catch (err) {
         log("IDLE_GET_MSG_FAIL", `${err}`)
       }
-      if (!finalText) return
 
-      // 所有文字和工具名已通过 message.part.updated 实时发出，这里不再重复发送
-      try {
-        _thinkingSent.delete(sid)
-      } catch { /* best effort */ }
+      _thinkingSent.delete(sid)
 
       // auto-continue：AI 出错后自动重试
       if (_pendingContinue.has(sid)) {
@@ -1668,6 +1655,7 @@ function createEventHandler(client: any) {
           if (_userMsgIds.size > 1000) _userMsgIds.clear()
         } else if ((info as any).role === "assistant" && info.error) {
           _pendingContinue.add(info.sessionID)
+      if (_pendingContinue.size > 500) _pendingContinue.clear()
           log("AUTO_CONT", `[${t(info.sessionID)}] error=${JSON.stringify(info.error).slice(0, 80)}`)
         }
       }
@@ -1790,16 +1778,7 @@ function createTools(client: any) {
         try {
           const { flat, dirMap } = await listAllSessions(client)
           if (flat.length === 0) return { output: "暂无会话" }
-          let currentSid: string | undefined
-          for (const sid of wechatSid.values()) {
-            if (sid === ctx?.sessionID) { currentSid = sid; break }
-          }
-          if (!currentSid) {
-            for (const sid of wechatSid.values()) {
-              if (flat.some(s => s.id === sid)) { currentSid = sid; break }
-            }
-          }
-          const sessionLines = formatDirSessions(flat, dirMap, currentSid)
+          const sessionLines = formatDirSessions(flat, dirMap, ctx?.sessionID)
           return { output: sessionLines.join("\n") }
         } catch {
           return { output: "获取会话列表失败" }
