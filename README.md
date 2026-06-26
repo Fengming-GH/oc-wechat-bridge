@@ -15,10 +15,6 @@ OpenCode 插件合集，已全部开源到 GitHub。
   - [2. oc-forward - 跨会话转发](#2-oc-forward---跨会话转发)
   - [3. oc-auto-continue - 自动续命](#3-oc-auto-continue---自动续命)
   - [4. oc-taskid-tracking - 子AI 延续追踪](#4-oc-taskid-tracking---子ai-延续追踪)
-- [开发指南](#开发指南)
-  - [本地开发](#本地开发)
-  - [Git 推送（首次）](#git-推送首次)
-  - [发布到 npm](#发布到-npm)
 - [常见问题](#常见问题)
 - [许可](#许可)
 
