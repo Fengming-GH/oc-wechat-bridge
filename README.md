@@ -39,25 +39,6 @@ OpenCode 插件合集，已全部开源到 GitHub。
 | 3 | `@fengming-gh/oc-auto-continue` | [oc-auto-continue](https://github.com/Fengming-GH/oc-auto-continue) | v1.0.0 | 自动续命：terminated/API 错误后自动恢复 + 压缩后重读规则 |
 | 4 | `@fengming-gh/oc-taskid-tracking` | [oc-taskid-tracking](https://github.com/Fengming-GH/oc-taskid-tracking) | v1.0.0 | 让子AI 带着上下文连续工作 |
 
-## 项目状态
-
-### 🟢 已完成
-
-| # | 进展 | 说明 |
-|:-:|:-----|:-----|
-| 1 | 源码开发 | 3 个插件全部完成，各独立 GitHub 仓库包含完整 TypeScript 源码 + package.json + tsconfig.json |
-| 2 | 插件文档 | 每个插件有中文详细版 README.md + 英文摘要版 README_EN.md |
-| 3 | 本地部署 | BT-Valve 项目 `.opencode/plugins/` 下 3 个 `.ts` 文件运行中 |
-| 4 | 缓存标题 | 插件自动填充 `_title` 字段，Session 文件人类可读 |
-
-### 🟡 待办
-
-| # | 待办项 | 原因 |
-|:-:|:------|:-----|
-| 1 | npm publish | 三个包的作用域 `@fengming-gh/` 已定，需注册 npm 账号后 `npm publish` |
-| 2 | BT-Valve 切 npm 源 | 本地 `.opencode/plugins/` 文件 → `opencode.json` 的 `plugin` 字段引用 npm 包 |
-| 3 | GitHub Action | 暂未添加（需确定自动化目标后再写 workflow） |
-
 ## 快速开始
 
 ### 前置条件
