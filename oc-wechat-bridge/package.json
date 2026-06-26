@@ -1,7 +1,7 @@
 {
   "name": "@fengming-gh/oc-wechat-bridge",
   "version": "1.0.1",
-  "description": "将微信消息桥接到 OpenCode，支持双向对话与权限审批",
+  "description": "将微信消息桥接到 OpenCode，支持双向对话、会话管理、跨会话转发",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",

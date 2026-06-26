@@ -15,15 +15,27 @@
 
 ## 安装
 
-将 `src/index.ts` 复制到 OC 项目的 `.opencode/plugins/` 目录下，文件名任意：
+### 通过 npm 安装
 
-```bash
-cp oc-wechat-bridge/src/index.ts 你的项目/.opencode/plugins/wechat-bridge.ts
+在项目根目录的 `opencode.json` 中添加：
+
+```json
+{
+  "plugin": ["@fengming-gh/oc-wechat-bridge"]
+}
 ```
 
-重启 OC，首次启动弹出二维码，微信扫码登录。
+重启 OC 后自动加载。无需手动 `npm install`。
 
-无需 `npm install`，插件零外部运行时依赖。
+### 复制文件安装
+
+将 `src/index.ts` 复制到 OC 项目的 `.opencode/plugins/` 目录下：
+
+```bash
+cp src/index.ts 你的项目/.opencode/plugins/wechat-bridge.ts
+```
+
+重启 OC，首次启动弹出二维码，微信扫码登录。无需 `npm install`，插件零外部运行时依赖。
 
 ## 指令
 
