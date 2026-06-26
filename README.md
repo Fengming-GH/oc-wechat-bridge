@@ -27,7 +27,6 @@
 | 资源 | 链接 |
 |:----|:-----|
 | GitHub 组织主页 | https://github.com/Fengming-GH |
-| BT-Valve 主项目 | https://github.com/Fengming-GH/BT-Valve |
 | 本仓库 | https://github.com/Fengming-GH/oc-plugins |
 
 ## 插件列表
