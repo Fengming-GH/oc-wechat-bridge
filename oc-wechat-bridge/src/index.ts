@@ -568,7 +568,7 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
       let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
       await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
-      try { await client.session.update({ path: { id: sid }, body: { title: nn } }); await wx(`已改名: ${nn}`) } catch { await wx("改名失败") }; break }
+      try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, nn); await updateSessionIcon(client, sid, "normal"); await wx(`已改名: ${t(sid)}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { const resp = await client.session.messages({ path: { id: sid }, query: { limit: 5 } }); const msgs = Array.isArray(resp) ? resp : resp.data ?? []; let mode: string | undefined; for (let i = msgs.length-1; i>=0; i--) { if (msgs[i].info?.role === "assistant") { mode = msgs[i].info.mode; break } }; await wx(`当前模式: ${mode ?? _modeCache.get(sid) ?? "build"}`) } catch { await wx(`模式: ${_modeCache.get(sid) ?? "build"}`) }; break }
     case "help": case "帮助": await wx("/stop /status /switch N /new N\n/unbind /rename /mode /help\n审批: 同意 拒绝"); break
