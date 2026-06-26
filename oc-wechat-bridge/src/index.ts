@@ -209,7 +209,7 @@ async function recordSendResult(sid: string | null, success: boolean, client: an
 
 async function getOrCreateSession(client: any, wechatId: string, _worktree: string): Promise<string> {
   const existing = wechatSid.get(wechatId)
-  if (existing && sidTitle.has(existing)) {
+  if (existing) {
     await updateSessionIcon(client, existing, "normal")
     return existing
   }
@@ -700,7 +700,7 @@ function createEventHandler(client: any) {
     if (event.type === "message.updated") { const info = event.properties?.info; if (info?.id) { if (info.role === "user") _userMsgIds.add(info.id); else if (info.role === "assistant" && info.error && CONTINUE_ERRORS.has(info.error.name)) { _pendingContinue.add(info.sessionID); if (_pendingContinue.size > 100) _pendingContinue.clear() } } return }
     if (event.type === "session.created") { const s = (event as EventSessionCreated).properties.info; if (!s.parentID) sidTitle.set(s.id, s.title); return }
     if (event.type === "session.deleted") { const s = (event as EventSessionDeleted).properties.info; sidTitle.delete(s.id); _modeCache.delete(s.id); _pendingContinue.delete(s.id); _compacted.delete(s.id); for (const [wx, sid] of wechatSid) { if (sid === s.id) { wechatSid.delete(wx); break } } return }
-    if (event.type === "session.updated") { const s = event.properties.info as Session; if (!s.parentID && sidTitle.get(s.id) !== s.title) { sidTitle.set(s.id, s.title); const wxId = findWechatSender(s.id); if (wxId) updateSessionIcon(client, s.id, "normal").catch(() => {}) } return }
+    if (event.type === "session.updated") { const s = event.properties.info as Session; if (!s.parentID && sidTitle.get(s.id) !== s.title) sidTitle.set(s.id, s.title); return }
     if (event.type === "message.part.updated") { const p = event.properties?.part; const sid = p?.sessionID; if (!sid || _skipMsgIds.has(p.messageID)) return; const wxId = findWechatSender(sid); if (!wxId) return
       if (p.type === "reasoning") { if (p.text && !_thinkingSent.has(sid)) { _thinkingSent.add(sid); enqueueSend(sid, () => sendText(_creds!, wxId, "思考中...", undefined, client)) } }
       else if (p.type === "tool") { const name = p.tool ?? ""; if (name && _fwdLastTool.get(sid) !== name) { _fwdLastTool.set(sid, name); enqueueSend(sid, () => sendText(_creds!, wxId, name, undefined, client)) } }
