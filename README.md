@@ -1,6 +1,6 @@
 # OC Plugins
 
-OpenCode 插件合集，已全部开源到 GitHub。
+基于微信官方 iLink Bot API 开发，非逆向/非破解。OpenCode 插件合集，已全部开源到 GitHub。
 
 ## 目录
 
