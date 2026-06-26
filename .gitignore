@@ -1,23 +1,6 @@
-opencode.json---
-bun.lock
-oc-wechat-bridge/bun.lock
-改造计划.md
-oc-wechat-bridge/改造计划.md
-*.rar
-ref/
-test/
 node_modules/
-.opencode/node_modules/
-.opencode/plugins/log/
-.opencode/plugins/wechat-bridge/session-map.json
-dist/
 *.log
-backup-*/
 .DS_Store
 Thumbs.db
-
-# Development diary
 开发日记.md
-
-# Local dev copy
 .opencode/
