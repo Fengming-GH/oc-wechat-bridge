@@ -176,6 +176,7 @@ function stripIconPrefix(title: string): string {
 }
 
 async function updateSessionIcon(client: any, sid: string, status: "normal" | "degraded" | "processing" | "offline") {
+  log("ICON", `${status} sid=${sid?.slice(0,16)}`)
   try {
     let title = sidTitle.get(sid)
     if (!title) return
@@ -248,6 +249,7 @@ function findWechatSender(sid: string): string | null {
       fallback = wx
     }
   }
+  log("FIND", `sid=${sid?.slice(0,16)} result=${(fallback ?? "null").slice(0,8)}`)
   return fallback
 }
 
@@ -328,11 +330,11 @@ function saveState() {
   ensureDataDir()
   const tmp = STATE_FILE + ".tmp"
   const ct: Record<string, string> = {}
-  for (const [k, v] of contextTokens) { if (!k.endsWith("@im.wechat")) ct[k] = v }
+  for (const [k, v] of contextTokens) { if (k.endsWith("@im.wechat")) ct[k] = v }
   const sm: Record<string, string> = {}
-  for (const [wx, sid] of wechatSid) { if (!wx.endsWith("@im.wechat")) sm[wx] = sid }
+  for (const [wx, sid] of wechatSid) { if (wx.endsWith("@im.wechat")) sm[wx] = sid }
   const state: any = { syncBuf: syncBuffer, contextTokens: ct }
-  if (Object.keys(sm).length) state.sessionMap = sm
+  if (Object.keys(sm).length) { state.sessionMap = sm; log("STATE_WRITE", `has_sessionMap entries=${Object.keys(sm).length}`) } else { log("STATE_WRITE", "no_sessionMap") }
   try { writeFileSync(tmp, JSON.stringify(state), "utf-8"); renameSync(tmp, STATE_FILE) } catch (e) { log("STATE_WRITE_ERR", `${e}`) }
 }
 function loadState() {
@@ -563,10 +565,20 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
         if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title; if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
         await updateSessionIcon(client, m.id, "normal"); await wx(`已切换到: ${m.title}`) } catch { await wx("切换失败") }; break }
     case "unbind": case "解绑": { const old = wechatSid.get(senderId)
+      log("UNBIND", `entry senderId=${senderId.slice(0,16)} wechatSid_size=${wechatSid.size} old=${old?.slice(0,16) ?? "null"}`)
       let oldTitle = sidTitle.get(old)
-      if (old) { try { const { flat } = await listAllSessions(client); const found = flat.find(s => s.id === old); if (found) oldTitle = found.title } catch { }; if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) { const stripped = stripIconPrefix(oldTitle); try { await client.session.update({ path: { id: old }, body: { title: stripped } }) } catch { }; sidTitle.set(old, stripped) }; wechatSid.delete(senderId); saveState() }
+      if (old) {
+        log("UNBIND", `has_old=true oldTitle=${oldTitle?.slice(0,30) ?? "null"} ${ICON_PREFIXES.some(p => oldTitle?.startsWith(p)) ? "has_icon" : "no_icon"}`)
+        try { const { flat } = await listAllSessions(client); const found = flat.find(s => s.id === old); if (found) oldTitle = found.title; log("UNBIND", `listAllSessions found=${found ? "yes" : "no"} oldTitle_now=${oldTitle?.slice(0,30) ?? "null"}`) } catch (e: any) { log("UNBIND", `listAllSessions_err ${e.message}`) }
+        if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) {
+          const stripped = stripIconPrefix(oldTitle)
+          try { await client.session.update({ path: { id: old }, body: { title: stripped } }); log("UNBIND", `stripped_icon ok`) } catch (e: any) { log("UNBIND", `stripped_icon_err ${e.message}`) }
+          sidTitle.set(old, stripped)
+        }
+        wechatSid.delete(senderId); saveState(); log("UNBIND", `deleted wechatSid_size=${wechatSid.size} state_saved=true`)
+      } else { log("UNBIND", "has_old=false -> skip delete") }
       let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
-      await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); break }
+      await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); log("UNBIND", "wx_reply_sent"); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, nn); await updateSessionIcon(client, sid, "normal"); await wx(`已改名: ${t(sid)}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
