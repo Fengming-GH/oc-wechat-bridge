@@ -65,7 +65,6 @@ const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
 const CONTINUE_ERRORS = new Set(["MessageOutputLengthError", "APIError", "UnknownError"])
 const _compacted = new Set<string>()
-const _skipMsgIds = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
@@ -190,6 +189,12 @@ async function updateSessionIcon(client: any, sid: string, status: "normal" | "d
       sidTitle.set(sid, newTitle)
     }
   } catch { /* best effort */ }
+}
+
+async function stripSessionIcon(client: any, sid: string, title: string | undefined): Promise<boolean> {
+  if (!title || !ICON_PREFIXES.some(p => title.startsWith(p))) return false
+  const stripped = stripIconPrefix(title)
+  try { await client.session.update({ path: { id: sid }, body: { title: stripped } }); sidTitle.set(sid, stripped); return true } catch { return false }
 }
 
 const sendFailCount = new Map<string, number>()
@@ -549,6 +554,14 @@ function formatDirSessions(flat: Session[], dm: Map<string, number>, cur: string
   return lines
 }
 
+async function formatSessionGuide(client: any, cur: string | undefined): Promise<string> {
+  try {
+    const { flat, dirMap: dm } = await listAllSessions(client)
+    const sl = formatDirSessions(flat, dm, cur)
+    return (sl.length ? sl.join("\n") : "(无会话)") + "\n回复 /switch <编号> 切换"
+  } catch { return "获取会话列表失败" }
+}
+
 async function handleCommand(cmd: string, senderId: string, account: WechatCredentials, client: any, worktree: string) {
   const parts = cmd.slice(1).split(/\s+/); let command = parts[0].toLowerCase(); const args = parts.slice(1)
   const a = command.match(/^(switch|切换|new|新建|unbind|解绑|mode|模式)(\d+)$/)
@@ -556,13 +569,13 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
   const wx = (text: string) => sendText(account, senderId, text, undefined, client)
   switch (command) {
     case "stop": case "停止": { const sid = wechatSid.get(senderId); if (sid) try { await client.session.abort({ path: { id: sid } }) } catch { /* ok */ }; await wx("已中断"); break }
-    case "status": case "状态": case "会话": { try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, wechatSid.get(senderId)); await wx((sl.length ? sl : ["(无会话)"]).join("\n") + "\n回复 /switch <编号> 切换") } catch { await wx("获取失败") }; break }
+    case "status": case "状态": case "会话": { await wx(await formatSessionGuide(client, wechatSid.get(senderId))); break }
     case "new": case "新建": { const n = parseInt(args[0]); let td: string | undefined; if (!isNaN(n)) { try { const { flat } = await listAllSessions(client); td = flat[n-1]?.directory } catch { /* */ } }
       try { const ttl = wechatTitle(); const resp: any = await client.session.create({ query: { directory: td || resolveDir(null, worktree) }, body: { title: ttl } }); const ns = resp.id ?? resp.sessionID ?? resp.data?.id; if (ns) { wechatSid.set(senderId, ns); sidTitle.set(ns, ttl); saveState(); await updateSessionIcon(client, ns, "normal"); await wx(`已创建 [${t(ns)}]`) } } catch { await wx("创建失败") }; break }
     case "switch": case "切换": { const tgt = args.join(" ").trim(); if (!tgt) { await wx("请指定编号或 ID"); break }
       try { const { flat } = await listAllSessions(client); const n = parseInt(tgt); const m = (n>=1 && n<=flat.length) ? flat[n-1] : flat.find(s => s.id.startsWith(tgt)) ?? null; if (!m) { await wx(`未找到: ${tgt}`); break }
         const pv = wechatSid.get(senderId); wechatSid.set(senderId, m.id); sidTitle.set(m.id, m.title); saveState()
-        if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title; if (pt && ICON_PREFIXES.some(p => pt.startsWith(p))) { try { await client.session.update({ path: { id: pv }, body: { title: stripIconPrefix(pt) } }) } catch { }; sidTitle.set(pv, stripIconPrefix(pt)) } }
+        if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title; await stripSessionIcon(client, pv, pt) }
         await updateSessionIcon(client, m.id, "normal"); await wx(`已切换到: ${m.title}`) } catch { await wx("切换失败") }; break }
     case "unbind": case "解绑": { const old = wechatSid.get(senderId)
       log("UNBIND", `entry senderId=${senderId.slice(0,16)} wechatSid_size=${wechatSid.size} old=${old?.slice(0,16) ?? "null"}`)
@@ -571,14 +584,12 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
         log("UNBIND", `has_old=true oldTitle=${oldTitle?.slice(0,30) ?? "null"} ${ICON_PREFIXES.some(p => oldTitle?.startsWith(p)) ? "has_icon" : "no_icon"}`)
         try { const { flat } = await listAllSessions(client); const found = flat.find(s => s.id === old); if (found) oldTitle = found.title; log("UNBIND", `listAllSessions found=${found ? "yes" : "no"} oldTitle_now=${oldTitle?.slice(0,30) ?? "null"}`) } catch (e: any) { log("UNBIND", `listAllSessions_err ${e.message}`) }
         if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) {
-          const stripped = stripIconPrefix(oldTitle)
-          try { await client.session.update({ path: { id: old }, body: { title: stripped } }); log("UNBIND", `stripped_icon ok`) } catch (e: any) { log("UNBIND", `stripped_icon_err ${e.message}`) }
-          sidTitle.set(old, stripped)
+          const ok = await stripSessionIcon(client, old, oldTitle)
+          log("UNBIND", `stripped_icon ${ok ? "ok" : "fail"}`)
         }
         wechatSid.delete(senderId); saveState(); log("UNBIND", `deleted wechatSid_size=${wechatSid.size} state_saved=true`)
       } else { log("UNBIND", "has_old=false -> skip delete") }
-      let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
-      await wx(`WeChat 桥接${sb}\n\n回复 /switch <编号> 切换\n或发送问题创建新会话`); log("UNBIND", "wx_reply_sent"); break }
+      await wx(`WeChat 桥接\n${await formatSessionGuide(client, undefined)}`); log("UNBIND", "wx_reply_sent"); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, nn); await updateSessionIcon(client, sid, "normal"); await wx(`已改名: ${t(sid)}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
@@ -594,8 +605,7 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
 async function handleFirstContact(text: string, senderId: string, account: WechatCredentials, client: any, worktree: string): Promise<boolean> {
   if (_pendingFirstContact.has(senderId)) { _pendingFirstContact.delete(senderId); return false }
   _pendingFirstContact.add(senderId); setTimeout(() => _pendingFirstContact.delete(senderId), 10 * 60 * 1000)
-  let sb = ""; try { const { flat, dirMap: dm } = await listAllSessions(client); const sl = formatDirSessions(flat, dm, undefined); if (sl.length) sb = "\n" + sl.join("\n") } catch { }
-  await sendText(account, senderId, `WeChat 桥接\n${sb}\n回复 /switch <编号> 切换\n或发送问题创建新会话`, undefined, null)
+  await sendText(account, senderId, `WeChat 桥接\n${await formatSessionGuide(client, undefined)}`, undefined, null)
   return true
 }
 
@@ -709,11 +719,11 @@ function createEventHandler(client: any) {
       return
     }
     if (event.type === "session.compacted") { const sid = (event as any).properties?.sessionID; if (sid) _compacted.add(sid); return }
-    if (event.type === "message.updated") { const info = event.properties?.info; if (info?.id) { if (info.role === "user") _userMsgIds.add(info.id); else if (info.role === "assistant" && info.error && CONTINUE_ERRORS.has(info.error.name)) { _pendingContinue.add(info.sessionID); if (_pendingContinue.size > 100) _pendingContinue.clear() } } return }
+    if (event.type === "message.updated") { const info = event.properties?.info; if (info?.id) { if (info.role === "user") { _userMsgIds.add(info.id); if (_userMsgIds.size > 1000) _userMsgIds.clear() } else if (info.role === "assistant" && info.error && CONTINUE_ERRORS.has(info.error.name)) { _pendingContinue.add(info.sessionID); if (_pendingContinue.size > 100) _pendingContinue.clear() } } return }
     if (event.type === "session.created") { const s = (event as EventSessionCreated).properties.info; if (!s.parentID) sidTitle.set(s.id, s.title); return }
     if (event.type === "session.deleted") { const s = (event as EventSessionDeleted).properties.info; sidTitle.delete(s.id); _modeCache.delete(s.id); _pendingContinue.delete(s.id); _compacted.delete(s.id); for (const [wx, sid] of wechatSid) { if (sid === s.id) { wechatSid.delete(wx); break } } return }
-    if (event.type === "session.updated") { const s = event.properties.info as Session; if (!s.parentID && sidTitle.get(s.id) !== s.title) sidTitle.set(s.id, s.title); return }
-    if (event.type === "message.part.updated") { const p = event.properties?.part; const sid = p?.sessionID; if (!sid || _skipMsgIds.has(p.messageID)) return; const wxId = findWechatSender(sid); if (!wxId) return
+    if (event.type === "session.updated") { const s = event.properties.info as Session; if (!s.parentID && sidTitle.get(s.id) !== s.title) { sidTitle.set(s.id, s.title); const wxId = findWechatSender(s.id); if (wxId) updateSessionIcon(client, s.id, "normal").catch(() => {}) } return }
+    if (event.type === "message.part.updated") { const p = event.properties?.part; const sid = p?.sessionID; if (!sid) return; const wxId = findWechatSender(sid); if (!wxId) return
       if (p.type === "reasoning") { if (p.text && !_thinkingSent.has(sid)) { _thinkingSent.add(sid); enqueueSend(sid, () => sendText(_creds!, wxId, "思考中...", undefined, client)) } }
       else if (p.type === "tool") { const name = p.tool ?? ""; if (name && _fwdLastTool.get(sid) !== name) { _fwdLastTool.set(sid, name); enqueueSend(sid, () => sendText(_creds!, wxId, name, undefined, client)) } }
       else if (p.type === "text" && !p.ignored && !p.synthetic && !_userMsgIds.has(p.messageID)) { const t = p.text?.trim(); if (t) enqueueSend(sid, () => sendText(_creds!, wxId, t, undefined, client)) }
