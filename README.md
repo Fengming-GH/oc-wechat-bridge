@@ -11,10 +11,10 @@ OpenCode 插件合集，已全部开源到 GitHub。
   - [通过 npm 安装（推荐）](#通过-npm-安装推荐)
   - [通过本地文件安装](#通过本地文件安装)
 - [各插件详解](#各插件详解)
-  - [0. oc-wechat-bridge - 微信双向桥接](#0-oc-wechat-bridge---微信双向桥接)
-  - [1. oc-forward - 跨会话转发](#1-oc-forward---跨会话转发)
-  - [2. oc-auto-continue - 自动续命](#2-oc-auto-continue---自动续命)
-  - [3. oc-taskid-tracking - 子AI 延续追踪](#3-oc-taskid-tracking---子ai-延续追踪)
+  - [1. oc-wechat-bridge - 微信双向桥接（已包含oc-forward、oc-auto-continue）](#1-oc-wechat-bridge---微信双向桥接已包含oc-forwardoc-auto-continue)
+  - [2. oc-forward - 跨会话转发](#2-oc-forward---跨会话转发)
+  - [3. oc-auto-continue - 自动续命](#3-oc-auto-continue---自动续命)
+  - [4. oc-taskid-tracking - 子AI 延续追踪](#4-oc-taskid-tracking---子ai-延续追踪)
 - [开发指南](#开发指南)
   - [本地开发](#本地开发)
   - [Git 推送（首次）](#git-推送首次)
@@ -134,7 +134,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 
 ## 各插件详解
 
-### 0. oc-wechat-bridge - 微信双向桥接
+### 1. oc-wechat-bridge - 微信双向桥接（已包含oc-forward、oc-auto-continue）
 
 **解决的问题：** 在微信里和 OpenCode AI 对话，AI 回复自动推送回微信。
 
@@ -173,7 +173,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 | `/stop` | 中断 AI 回复 |
 | `/help` | 查看帮助 |
 
-### 1. oc-forward - 跨会话转发
+### 2. oc-forward - 跨会话转发
 
 **解决的问题：** OpenCode 的每个主会话是隔离的。当你有多个会话同时运行时（如"研发"、"项目经理"、"OC 插件"），AI 没法把消息从一个会话转发到另一个。
 
@@ -202,7 +202,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 - 转发是 fire-and-forget 模式，**不阻塞源 AI**（源 AI 发送后立即继续自己的工作）
 - `noReply: false` 确保目标 AI 收到消息后**自动回复**
 
-### 2. oc-auto-continue - 自动续命
+### 3. oc-auto-continue - 自动续命
 
 **解决的问题：** AI 会话经常因为各种原因意外中断（API 错误、输出超长、被用户 terminated），需要手动点"继续"才能恢复。插件自动检测中断并续命。
 
@@ -232,7 +232,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 
 插件在 `.opencode/plugins/log/auto-continue.log` 中记录所有事件（开始加载、消息完成、续命发送、压缩处理）。
 
-### 3. oc-taskid-tracking - 子AI 延续追踪
+### 4. oc-taskid-tracking - 子AI 延续追踪
 
 **解决的问题：** 主 AI 调用子 AI（通过 `task()` 工具）后，需要记住子 AI 的 sessionID 才能下次延续对话。手动记录麻烦且容易丢。同时要防止调用非团队成员（如系统内置的 `explore`、`developer` 等 agent）。
 
