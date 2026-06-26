@@ -34,7 +34,7 @@ OpenCode 插件合集，已全部开源到 GitHub。
 
 | # | npm 包名 | GitHub 仓库 | 版本 | 功能一句话 |
 |:-:|:---------|:------------|:----|:----------|
-| 1 | `@fengming-gh/oc-wechat-bridge` | [oc-wechat-bridge](https://github.com/Fengming-GH/oc-wechat-bridge) | v2.5.4 | 微信↔OC 双向桥接，流式输出，集成跨会话转发与自动续命。**零 npm 依赖，复制 `.ts` 即用** |
+| 1 | `@fengming-gh/oc-wechat-bridge` | [oc-wechat-bridge](https://github.com/Fengming-GH/oc-wechat-bridge) | v1.0.5 | 微信↔OC 双向桥接，流式输出，集成跨会话转发与自动续命。**零 npm 依赖，复制 `.ts` 即用** |
 | 2 | `@fengming-gh/oc-forward` | [oc-forward](https://github.com/Fengming-GH/oc-forward) | v1.0.0 | 跨会话消息转发：`！` 指令，不阻塞源 AI |
 | 3 | `@fengming-gh/oc-auto-continue` | [oc-auto-continue](https://github.com/Fengming-GH/oc-auto-continue) | v1.0.0 | 自动续命：terminated/API 错误后自动恢复 + 压缩后重读规则 |
 | 4 | `@fengming-gh/oc-taskid-tracking` | [oc-taskid-tracking](https://github.com/Fengming-GH/oc-taskid-tracking) | v1.0.0 | 让子AI 带着上下文连续工作 |
