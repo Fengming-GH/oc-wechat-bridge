@@ -1,5 +1,6 @@
 // ============================================================
 // oc-wechat-bridge: 将微信消息桥接到 OpenCode
+// 本插件用于 OpenCode WIN平台 桌面端，实现打通微信和 OpenCode  会话。最多允许一个微信在同一时刻绑定一个会话，允许微信切换会话。
 // ============================================================
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -56,6 +57,7 @@ const sidTitle = new Map<string, string>()
 const wechatSid = new Map<string, string>()
 const _pendingFirstContact = new Set<string>()
 let _projectDirs: string[] = []
+let _worktree = ""
 const _modeCache = new Map<string, string>()
 
 const _thinkingSent = new Set<string>()
@@ -68,7 +70,7 @@ const _compacted = new Set<string>()
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
-  _fwdQueue.set(sid, prev.then(() => fn(), () => fn()))
+  _fwdQueue.set(sid, prev.then(() => fn()).catch(() => {}))
 }
 
 // ============================================================
@@ -230,18 +232,6 @@ async function getOrCreateSession(client: any, wechatId: string, _worktree: stri
       return sid
     }
   } catch (err) { log("SESSION_CREATE_FAIL", `${err}`) }
-  try {
-    const resp: any = await client.session.list()
-    const all: Session[] = Array.isArray(resp) ? resp : resp.data ?? []
-    const first = all.find((s: Session) => !s.parentID)
-    if (first) {
-      wechatSid.set(wechatId, first.id)
-      sidTitle.set(first.id, first.title)
-      await updateSessionIcon(client, first.id, "normal")
-      saveState()
-      return first.id
-    }
-  } catch { /* best effort */ }
   throw new Error("No available session")
 }
 
@@ -311,7 +301,7 @@ function loadCredentials(): WechatCredentials | null {
 function saveCredentials(cred: WechatCredentials) {
   ensureDataDir()
   const tmp = CREDENTIALS_FILE + ".tmp"
-  try { writeFileSync(tmp, JSON.stringify(cred, null, 2), "utf-8"); renameSync(tmp, CREDENTIALS_FILE) } catch (e) { log("CRED_WRITE_ERR", `${e}`) }
+  try { writeFileSync(tmp, JSON.stringify(cred, null, 2), "utf-8"); renameSync(tmp, CREDENTIALS_FILE) } catch (e) { log("CRED_WRITE_ERR", `${e}`) } finally { try { rmSync(tmp) } catch { } }
 }
 
 async function validateCredentials(cred: WechatCredentials): Promise<string | null> {
@@ -338,7 +328,7 @@ function saveState() {
   for (const [wx, sid] of wechatSid) { if (wx.endsWith("@im.wechat")) sm[wx] = sid }
   const state: any = { syncBuf: syncBuffer, contextTokens: ct }
   if (Object.keys(sm).length) state.sessionMap = sm
-  try { writeFileSync(tmp, JSON.stringify(state), "utf-8"); renameSync(tmp, STATE_FILE) } catch (e) { log("STATE_WRITE_ERR", `${e}`) }
+  try { writeFileSync(tmp, JSON.stringify(state), "utf-8"); renameSync(tmp, STATE_FILE) } catch (e) { log("STATE_WRITE_ERR", `${e}`) } finally { try { rmSync(tmp) } catch { } }
 }
 function loadState() {
   try {
@@ -530,6 +520,7 @@ function resolveDir(dirIdx: number | null, worktree: string): string { return (!
 function getNick(dir: string): string { const n = basename(dir); return n || dir }
 
 async function listAllSessions(client: any): Promise<{ flat: Session[]; dirMap: Map<string, number> }> {
+  _projectDirs = findProjectDirs(_worktree)
   const flat: Session[] = []; const dm = new Map<string, number>()
   for (let di = 0; di < _projectDirs.length; di++) {
     try {
@@ -670,7 +661,7 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
   try { await client.app.log({ body: { service: "wechat-bridge", level: "info", message: "plugin loaded" } }) } catch { /* */ }
   migrateOldDataDir()
   migrateOldStateFiles(worktree)
-  _projectDirs = findProjectDirs(worktree)
+  _projectDirs = findProjectDirs(worktree); _worktree = worktree
   initSessionCache(client)
   loadState()
   const abortController = new AbortController()
@@ -683,7 +674,7 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
         const { flat, dirMap } = await listAllSessions(client)
         if (flat.length === 0) return
         const sl = formatDirSessions(flat, dirMap, undefined)
-        const lines = ["当前可用的会话：", ...sl, "", "用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：", "  - ！会话 或 !sessions → 调用 list_sessions 工具", "  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发"]
+        const lines = ["当前可用的会话：", ...sl, "", "用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：", "  - ！会话 或 !sessions → 调用 list_sessions 工具", "  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发", "", "注意：list_sessions 工具返回的内容包含 ``` 代码块，这是数据格式的一部分，删除代码块会导致数据损坏，必须一字不差地输出。"]
         output.system.push(lines.join("\n"))
       } catch { /* best effort */ }
     },
@@ -706,7 +697,6 @@ function createEventHandler(client: any) {
       await updateSessionIcon(client, sid, "normal")
       try { const resp: any = await client.session.messages({ path: { id: sid }, query: { limit: 15 } }); const msgs = Array.isArray(resp) ? resp : resp.data ?? []
         for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].info?.role === "assistant") { if (msgs[i].info.mode) _modeCache.set(sid, msgs[i].info.mode); break } } } catch { /* */ }
-      _thinkingSent.delete(sid)
       if (_pendingContinue.has(sid)) { _pendingContinue.delete(sid); try { await client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text" as any, text: "检测到异常，请继续" }] } }) } catch { } }
       if (_compacted.has(sid)) { _compacted.delete(sid); try { await client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text" as any, text: "上下文被压缩" }] } }) } catch { } }
       return
@@ -741,9 +731,9 @@ function createTools(client: any) {
         if (!_creds) return { output: "微信桥接尚未完成登录" }
         return { output: [`微信账户: ${_creds.accountId}`, `绑定用户: ${_creds.userId ?? "(无)"}`, `会话缓存: ${sidTitle.size} 个`, `上下文令牌: ${contextTokens.size} 个`, `同步游标: ${syncBuffer ? "存在" : "无"}`, `数据目录: ${DATA_DIR}`].join("\n") }
       } }),
-    list_sessions: tool({ description: "列出所有可用会话的标题和 ID", args: {},
+    list_sessions: tool({ description: "列出所有可用会话的标题和 ID。调用后带 ``` 代码块原样输出，删除代码块会破坏数据格式，必须保留。", args: {},
       execute: async (_args: any, ctx: any) => {
-        try { const { flat, dirMap } = await listAllSessions(client); if (flat.length === 0) return { output: "暂无会话" }; return { output: formatDirSessions(flat, dirMap, ctx?.sessionID).join("\n") } } catch { return { output: "获取会话列表失败" } }
+        try { const { flat, dirMap } = await listAllSessions(client); if (flat.length === 0) return { output: "暂无会话" }; const body = formatDirSessions(flat, dirMap, ctx?.sessionID).join("\n"); return { output: "```\n" + body + "\n```" } } catch { return { output: "获取会话列表失败" } }
       } }),
     forward_to_session: tool({ description: "转发消息到标题前缀匹配的会话。用户说「转发」时使用此工具", args: { prefix: tool.schema.string().describe("目标会话标题前缀"), message: tool.schema.string().describe("要转发的消息内容") },
       execute: async (args: any, ctx: any) => {
