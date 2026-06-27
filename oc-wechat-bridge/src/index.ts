@@ -575,8 +575,8 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
       let oldTitle = sidTitle.get(old)
       if (old) {
         try { fetched = await listAllSessions(client); const found = fetched.flat.find(s => s.id === old); if (found) oldTitle = found.title } catch { /* */ }
-        if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) { await stripSessionIcon(client, old, oldTitle) }
         wechatSid.delete(senderId); saveState()
+        if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) { await stripSessionIcon(client, old, oldTitle) }
       }
       await wx(`WeChat 桥接\n${await formatSessionGuide(client, undefined, fetched)}`); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
