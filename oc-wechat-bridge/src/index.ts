@@ -143,7 +143,7 @@ function buildCdnUploadUrl(uploadParam: string, filekey: string): string {
 function initSessionCache(client: any) {
   setTimeout(async () => {
     try {
-      const { flat } = await listAllSessions(client)
+      const { flat } = await _listSessionsByDirs(client, _projectDirs)
       for (const s of flat) sidTitle.set(s.id, s.title)
       log("INIT", `cached ${sidTitle.size} sessions`)
     } catch (err) {
@@ -468,7 +468,7 @@ async function processInboundMessage(raw: any, account: WechatCredentials, clien
   recentMessageKeys.add(msgKey); recentMessageOrder.push(msgKey)
   while (recentMessageOrder.length > RECENT_KEYS_MAX) recentMessageKeys.delete(recentMessageOrder.shift()!)
   const senderId = raw.from_user_id ?? "unknown"
-  if (raw.context_token) { contextTokens.set(senderId, raw.context_token); saveState() }
+  if (raw.context_token && contextTokens.get(senderId) !== raw.context_token) { contextTokens.set(senderId, raw.context_token); saveState() }
   const downloadedPaths: string[] = []
   for (const att of attachments) {
     try { const enc = await downloadFromCdn(att.media); const pt = decryptInboundMediaPayload(enc, att.aesKey); downloadedPaths.push(saveAttachment(att.fileName || `wechat-${att.kind}`, pt)) }
@@ -519,17 +519,21 @@ function saveAttachment(fileName: string, data: Buffer): string {
 function resolveDir(dirIdx: number | null, worktree: string): string { return (!dirIdx || dirIdx < 1 || dirIdx > _projectDirs.length) ? worktree : _projectDirs[dirIdx - 1] }
 function getNick(dir: string): string { const n = basename(dir); return n || dir }
 
-async function listAllSessions(client: any): Promise<{ flat: Session[]; dirMap: Map<string, number> }> {
-  _projectDirs = findProjectDirs(_worktree)
+async function _listSessionsByDirs(client: any, dirs: string[]): Promise<{ flat: Session[]; dirMap: Map<string, number> }> {
   const flat: Session[] = []; const dm = new Map<string, number>()
-  for (let di = 0; di < _projectDirs.length; di++) {
+  for (let di = 0; di < dirs.length; di++) {
     try {
-      const resp: any = await client.session.list({ query: { directory: _projectDirs[di] } })
+      const resp: any = await client.session.list({ query: { directory: dirs[di] } })
       const all: Session[] = Array.isArray(resp) ? resp : resp.data ?? []
       for (const s of all) { if (!s.parentID) { flat.push(s); dm.set(s.id, di) } }
     } catch { /* skip */ }
   }
   return { flat, dirMap: dm }
+}
+
+async function listAllSessions(client: any): Promise<{ flat: Session[]; dirMap: Map<string, number> }> {
+  _projectDirs = findProjectDirs(_worktree)
+  return _listSessionsByDirs(client, _projectDirs)
 }
 
 function formatDirSessions(flat: Session[], dm: Map<string, number>, cur: string | undefined): string[] {
@@ -543,9 +547,9 @@ function formatDirSessions(flat: Session[], dm: Map<string, number>, cur: string
   return lines
 }
 
-async function formatSessionGuide(client: any, cur: string | undefined): Promise<string> {
+async function formatSessionGuide(client: any, cur: string | undefined, prefetched?: { flat: Session[]; dirMap: Map<string, number> }): Promise<string> {
   try {
-    const { flat, dirMap: dm } = await listAllSessions(client)
+    const { flat, dirMap: dm } = prefetched ?? await listAllSessions(client)
     const sl = formatDirSessions(flat, dm, cur)
     return (sl.length ? sl.join("\n") : "(无会话)") + "\n回复 /switch <编号> 切换"
   } catch { return "获取会话列表失败" }
@@ -567,13 +571,14 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
         if (pv && pv !== m.id) { const pt = flat.find(s => s.id === pv)?.title; await stripSessionIcon(client, pv, pt) }
         await updateSessionIcon(client, m.id, "normal"); await wx(`已切换到: ${m.title}`) } catch { await wx("切换失败") }; break }
     case "unbind": case "解绑": { const old = wechatSid.get(senderId)
+      let fetched: { flat: Session[]; dirMap: Map<string, number> } | undefined
       let oldTitle = sidTitle.get(old)
       if (old) {
-        try { const { flat } = await listAllSessions(client); const found = flat.find(s => s.id === old); if (found) oldTitle = found.title } catch { /* */ }
+        try { fetched = await listAllSessions(client); const found = fetched.flat.find(s => s.id === old); if (found) oldTitle = found.title } catch { /* */ }
         if (oldTitle && ICON_PREFIXES.some(p => oldTitle.startsWith(p))) { await stripSessionIcon(client, old, oldTitle) }
         wechatSid.delete(senderId); saveState()
       }
-      await wx(`WeChat 桥接\n${await formatSessionGuide(client, undefined)}`); break }
+      await wx(`WeChat 桥接\n${await formatSessionGuide(client, undefined, fetched)}`); break }
     case "rename": case "改名": { const nn = args.join(" ").trim(); if (!nn) { await wx("请指定标题"); break }; const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, nn); await updateSessionIcon(client, sid, "normal"); await wx(`已改名: ${t(sid)}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
@@ -670,13 +675,7 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
     event: createEventHandler(client),
     "permission.ask": createPermissionHandler(client),
     "experimental.chat.system.transform": async (_input: any, output: { system: string[] }) => {
-      try {
-        const { flat, dirMap } = await listAllSessions(client)
-        if (flat.length === 0) return
-        const sl = formatDirSessions(flat, dirMap, undefined)
-        const lines = ["当前可用的会话：", ...sl, "", "用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：", "  - ！会话 或 !sessions → 调用 list_sessions 工具", "  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发", "", "注意：list_sessions 工具返回的内容包含 ``` 代码块，这是数据格式的一部分，删除代码块会导致数据损坏，必须一字不差地输出。"]
-        output.system.push(lines.join("\n"))
-      } catch { /* best effort */ }
+      output.system.push("用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：\n  - ！会话 或 !sessions → 调用 list_sessions 工具\n  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发\n\n注意：list_sessions 工具返回的内容包含 ``` 代码块，这是数据格式的一部分，删除代码块会导致数据损坏，必须一字不差地输出。")
     },
     tool: createTools(client),
   }
