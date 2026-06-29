@@ -33,7 +33,7 @@
 
 | # | npm 包名 | GitHub 仓库 | 版本 | 功能一句话 |
 |:-:|:---------|:------------|:----|:----------|
-| 1 | `@fengming-gh/oc-wechat-bridge` | [oc-wechat-bridge](https://github.com/Fengming-GH/oc-wechat-bridge) | v1.0.5 | 微信↔OC 双向桥接，流式输出，集成跨会话转发与自动续命。**零 npm 依赖，复制 `.ts` 即用** |
+| 1 | `@fengming-gh/oc-wechat-bridge` | [oc-wechat-bridge](https://github.com/Fengming-GH/oc-wechat-bridge) | v1.1.0 | 微信↔OC 双向桥接，流式输出，集成跨会话转发、自动续命与微信审批。**零 npm 依赖，复制 `.ts` 即用** |
 | 2 | `@fengming-gh/oc-forward` | [oc-forward](https://github.com/Fengming-GH/oc-forward) | v1.0.0 | 跨会话消息转发：`！` 指令，不阻塞源 AI |
 | 3 | `@fengming-gh/oc-auto-continue` | [oc-auto-continue](https://github.com/Fengming-GH/oc-auto-continue) | v1.0.0 | 自动续命：terminated/API 错误后自动恢复 + 压缩后重读规则 |
 | 4 | `@fengming-gh/oc-taskid-tracking` | [oc-taskid-tracking](https://github.com/Fengming-GH/oc-taskid-tracking) | v1.0.0 | 让子AI 带着上下文连续工作 |
@@ -120,6 +120,7 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 2. 长轮询接收微信消息 → 注入 OC 会话 → AI 处理 → 流式输出（思考、工具、文字实时推回微信）
 3. 支持 `/switch` 切换绑定的 OC 会话、`/rename` 改名、`/status` 查看状态
 4. 集成了 [oc-forward](https://github.com/Fengming-GH/oc-forward)（跨会话转发）和 [oc-auto-continue](https://github.com/Fengming-GH/oc-auto-continue)（自动续命 + 压缩重读）
+5. 订阅 SSE 全局事件流，`permission.asked` 事件实时推送微信，用户可在微信上同意/拒绝 OC 的权限请求
 
 **安装（两种方式）：**
 
@@ -148,6 +149,28 @@ cp oc-taskid-tracking/src/index.ts   你的项目/.opencode/plugins/taskID-track
 | `/unbind` | 解绑当前会话 |
 | `/stop` | 中断 AI 回复 |
 | `/help` | 查看帮助 |
+| `/同意` 等（13 个同意词） | 同意所有待处理的权限请求 |
+| `/同意 N` | 同意验证码为 N 的特定请求 |
+| `/拒绝` 等（11 个拒绝词） | 拒绝所有待处理的权限请求 |
+| `/拒绝 N` | 拒绝验证码为 N 的特定请求 |
+
+**微信审批系统（v1.1.0 新增）：**
+
+通过 SSE 全局事件流订阅 `permission.asked` 事件 → 推送到微信 → 用户回复 `/同意` 或 `/拒绝` → 调用 `postSessionIdPermissionsPermissionId()` API 完成审批。
+
+- 5 分钟超时自动拒绝，pending 清空时验证码计数器归零
+- 验证码为递增序列 `1, 2, 3...`，支持 `/同意 1` 精确批复单个请求
+- 多实例 `_seenPermissionIds` 去重，防止重复推送
+- 零依赖，全程使用 v1 `client` 已有 API
+
+**完整词表（不区分大小写）：**
+
+| 意图 | 指令 |
+|:----|:-----|
+| 同意（13 个） | `/同意` `/好` `/好的` `/ok` `/yes` `/确认` `/批准` `/是` `/可以` `/行` `/对` `/嗯` `/y` |
+| 拒绝（11 个） | `/拒绝` `/no` `/不了` `/不` `/不行` `/不可以` `/否` `/取消` `/不要` `/n` |
+| 带验证码同意 | `/同意 1` — 仅同意验证码为 `1` 的请求 |
+| 带验证码拒绝 | `/拒绝 2` — 仅拒绝验证码为 `2` 的请求 |
 
 ### 2. oc-forward - 跨会话转发
 
