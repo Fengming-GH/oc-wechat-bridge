@@ -67,6 +67,15 @@ const _fwdQueue = new Map<string, Promise<void>>()
 const _pendingContinue = new Set<string>()
 const CONTINUE_ERRORS = new Set(["MessageOutputLengthError", "APIError", "UnknownError"])
 const _compacted = new Set<string>()
+const _pendingPerms = new Map<string, {
+  timer: ReturnType<typeof setTimeout>
+  sessionID: string
+  permissionID: string
+  wxId: string
+  code: string
+}>()
+const _seenPermissionIds = new Set<string>()
+let _permCounter = 0
 
 function enqueueSend(sid: string, fn: () => Promise<void>) {
   const prev = _fwdQueue.get(sid) ?? Promise.resolve()
@@ -560,6 +569,38 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
   const a = command.match(/^(switch|切换|new|新建|unbind|解绑|mode|模式)(\d+)$/)
   if (a) { command = a[1]; args.unshift(a[2]) }
   const wx = (text: string) => sendText(account, senderId, text, undefined, client)
+  // === 审批指令匹配（优先于命令 switch） ===
+  const approveWords = /^(同意|好|好的|ok|yes|确认|批准|是|可以|行|对|嗯|y)$/i
+  const denyWords = /^(拒绝|no|不了|不|不行|不可以|否|取消|不要|n)$/i
+  async function replyPerm(p: { sessionID: string; permissionID: string; code: string; timer: ReturnType<typeof setTimeout>; wxId: string }, action: "once" | "reject"): Promise<boolean> {
+    clearTimeout(p.timer)
+    try { await client.postSessionIdPermissionsPermissionId({ path: { id: p.sessionID, permissionID: p.permissionID }, body: { response: action } }); _pendingPerms.delete(p.code); return true }
+    catch (err: any) { log("PERM_REPLY_ERR", `${err?.message ?? err}`); return false }
+  }
+  if (command === "同意" && args.length > 0) {
+    if (_pendingPerms.size === 0) { await wx("当前没有待处理的授权请求"); return }
+    const p = _pendingPerms.get(args[0])
+    if (!p) { await wx(`未找到验证码 ${args[0]}`); return }
+    await wx(await replyPerm(p, "once") ? "✅ 已授权" : "❌ 授权失败"); return
+  }
+  if (command === "拒绝" && args.length > 0) {
+    if (_pendingPerms.size === 0) { await wx("当前没有待处理的授权请求"); return }
+    const p = _pendingPerms.get(args[0])
+    if (!p) { await wx(`未找到验证码 ${args[0]}`); return }
+    await wx(await replyPerm(p, "reject") ? "❌ 已拒绝" : "❌ 拒绝失败"); return
+  }
+  if (approveWords.test(command)) {
+    if (_pendingPerms.size === 0) { await wx("当前没有待处理的授权请求"); return }
+    let ok = true
+    for (const p of _pendingPerms.values()) { if (!await replyPerm(p, "once")) ok = false }
+    await wx(ok ? "✅ 已授权" : "❌ 部分授权失败"); return
+  }
+  if (denyWords.test(command)) {
+    if (_pendingPerms.size === 0) { await wx("当前没有待处理的授权请求"); return }
+    let ok = true
+    for (const p of _pendingPerms.values()) { if (!await replyPerm(p, "reject")) ok = false }
+    await wx(ok ? "❌ 已拒绝" : "❌ 部分拒绝失败"); return
+  }
   switch (command) {
     case "stop": case "停止": { const sid = wechatSid.get(senderId); if (sid) try { await client.session.abort({ path: { id: sid } }) } catch { /* ok */ }; await wx("已中断"); break }
     case "status": case "状态": case "会话": { await wx(await formatSessionGuide(client, wechatSid.get(senderId))); break }
@@ -583,7 +624,7 @@ async function handleCommand(cmd: string, senderId: string, account: WechatCrede
       try { await client.session.update({ path: { id: sid }, body: { title: nn } }); sidTitle.set(sid, nn); await updateSessionIcon(client, sid, "normal"); await wx(`已改名: ${t(sid)}`) } catch { await wx("改名失败") }; break }
     case "mode": case "模式": { const sid = wechatSid.get(senderId); if (!sid) { await wx("未绑定"); break }
       try { const resp = await client.session.messages({ path: { id: sid }, query: { limit: 5 } }); const msgs = Array.isArray(resp) ? resp : resp.data ?? []; let mode: string | undefined; for (let i = msgs.length-1; i>=0; i--) { if (msgs[i].info?.role === "assistant") { mode = msgs[i].info.mode; break } }; await wx(`当前模式: ${mode ?? _modeCache.get(sid) ?? "build"}`) } catch { await wx(`模式: ${_modeCache.get(sid) ?? "build"}`) }; break }
-    case "help": case "帮助": await wx("/stop /status /switch N /new N\n/unbind /rename /mode /help\n审批: 同意 拒绝"); break
+    case "help": case "帮助": await wx("/stop /status /switch N /new N\n/unbind /rename /mode /help\n审批: /同意 | /好 | /好的 | /嗯"); break
     default: await wx(`未知指令: /${command}`)
   }
 }
@@ -671,9 +712,9 @@ export const WechatBridgePlugin: Plugin = async ({ client, worktree }) => {
   loadState()
   const abortController = new AbortController()
   lazyInit(client, worktree, abortController.signal)
+  tryStartPermissionSse(client)
   return {
     event: createEventHandler(client),
-    "permission.ask": createPermissionHandler(client),
     "experimental.chat.system.transform": async (_input: any, output: { system: string[] }) => {
       output.system.push("用户输入以 ！ 或 ! 开头的消息时，这是跨会话指令：\n  - ！会话 或 !sessions → 调用 list_sessions 工具\n  - ！<前缀> <消息> 或 !<前缀> <消息> → 调用 forward_to_session 工具转发\n\n注意：list_sessions 工具返回的内容包含 ``` 代码块，这是数据格式的一部分，删除代码块会导致数据损坏，必须一字不差地输出。")
     },
@@ -714,10 +755,61 @@ function createEventHandler(client: any) {
 }
 
 // ============================================================
-// Section 12b:  Permission Handler
+// Section 12b:  Permission SSE (审批事件订阅)
 // ============================================================
-function createPermissionHandler(_client: any) {
-  return async (_input: any, output: { status: "ask" | "deny" | "allow" }) => { output.status = "ask" }
+const PERM_NAMES: Record<string, string> = {
+  external_directory: "访问外部目录",
+  write: "写文件",
+  read: "读文件",
+  command: "执行（CMD）",
+  bash: "执行（bash）",
+  grep: "搜索文件内容",
+  glob: "搜索文件路径",
+  question: "询问",
+}
+
+async function tryStartPermissionSse(client: any) {
+  while (!_creds) await sleep(500)
+  while (true) {
+    try {
+      const sub: any = await client.global.event()
+      const stream: any = sub.stream
+      for await (const raw of stream) {
+        const props = raw?.payload?.properties
+        const type = raw?.payload?.type ?? raw?.type ?? ""
+        if (type !== "permission.asked") continue
+
+        if (_seenPermissionIds.has(props?.id)) continue
+        _seenPermissionIds.add(props?.id)
+        if (_seenPermissionIds.size > 500) _seenPermissionIds.clear()
+
+        const wxId = findWechatSender(props?.sessionID)
+        if (!wxId) continue
+        if (_pendingPerms.size === 0) _permCounter = 0
+        const code = String(++_permCounter)
+        const permName = props?.permission ?? props?.action ?? ""
+        const summary = PERM_NAMES[permName] ?? permName ?? "权限请求"
+        const paths = props?.patterns ?? props?.resources ?? []
+        const pathStr = Array.isArray(paths) ? paths.join("、") : ""
+        const meta = props?.metadata ?? {}
+        const detail = typeof meta.command === "string" ? meta.command.slice(0, 80) : typeof meta.tool === "string" ? meta.tool : ""
+        const lines = [`⚠️ 授权审批 ⚠️`, summary]
+        if (detail) lines.push(`操作: ${detail}`)
+        if (pathStr) lines.push(`路径: ${pathStr}`)
+        lines.push(`拒绝回复：/拒绝`, `同意回复：/同意 ${code} 或 /好`, `（5分钟后自动拒绝）`)
+        const msg = lines.join("\n\n")
+        try { await sendText(_creds!, wxId, msg) } catch { continue }
+        const timer = setTimeout(() => {
+          const p = _pendingPerms.get(code)
+          if (!p) return
+          _pendingPerms.delete(code)
+          client.postSessionIdPermissionsPermissionId({ path: { id: p.sessionID, permissionID: p.permissionID }, body: { response: "reject" } }).catch((err: any) => log("PERM_REPLY_ERR", `${err?.message ?? err}`))
+          sendText(_creds!, wxId, `⏰ 授权超时\n\n${summary}${pathStr ? `\n\n路径: ${pathStr}\n\n` : "\n\n"}已自动拒绝`).catch(() => {})
+        }, 5 * 60 * 1000)
+        _pendingPerms.set(code, { timer, sessionID: props.sessionID, permissionID: props.id, wxId, code })
+      }
+    } catch (e: any) { log("SSE_RETRY", `${e?.message ?? e}`); await sleep(3_000) }
+  }
 }
 
 // ============================================================
